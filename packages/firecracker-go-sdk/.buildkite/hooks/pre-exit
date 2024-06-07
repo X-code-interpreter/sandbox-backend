@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+
+sudo chown -hR "${USER}:${USER}" .

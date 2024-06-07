@@ -1,0 +1,9 @@
+{
+  "template": "default-code-interpreter",
+  "startCmd": "/root/.jupyter/start-up.sh",
+  "fcPath": "/mnt/data/firecracker/build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker",
+  "memMB": 2048,
+  "vcpu": 2,
+  "diskMB": 5120,
+  "kernelVersion": "5.10.186"
+}
