@@ -1,176 +1,361 @@
 package build
 
 import (
+	"bufio"
 	"context"
 	"fmt"
-	"path/filepath"
+	"os"
+	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
-	"github.com/firecracker-microvm/firecracker-go-sdk"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const (
-	tmpSocketDir        = "/tmp"
 	waitTimeForFCStart  = 10 * time.Second
 	waitTimeForStartCmd = 15 * time.Second
+	waitTimeForFCConfig = 500 * time.Millisecond
+
+	socketWaitTimeout = 2 * time.Second
 )
 
 type Snapshot struct {
-	vm *firecracker.Machine
+	fc     *exec.Cmd
+	client *client.FirecrackerAPI
 
-	env *Env
+	env        *Env
+	socketPath string
 }
 
-type fcConfigOpt func(*firecracker.Config)
-
-func withNetwork(n *network.FCNetwork) fcConfigOpt {
-	return func(cfg *firecracker.Config) {
-		cfg.NetNS = n.NetNsPath()
-	}
-}
-
-func withEnv(env *Env) fcConfigOpt {
-	return func(cfg *firecracker.Config) {
-		// rootfs drivers of FC
-		rootfs := "rootfs"
-		ioEngine := "Async"
-		isRootDevice := true
-		isReadOnly := false
-		pathOnHost := env.tmpRootfsPath()
-		rootfsDriver := models.Drive{
-			DriveID:      &rootfs,
-			IoEngine:     &ioEngine,
-			IsReadOnly:   &isReadOnly,
-			IsRootDevice: &isRootDevice,
-			PathOnHost:   &pathOnHost,
-		}
-		cfg.Drives = []models.Drive{rootfsDriver}
-
-		// api-socket of FC
-		socketFileName := fmt.Sprintf("fc-sock-%s.sock", env.EnvID)
-		socketPath := filepath.Join(tmpSocketDir, socketFileName)
-		cfg.SocketPath = socketPath
-
-		// kernel image path
-		kernelImagePath := env.KernelMountPath()
-		cfg.KernelImagePath = kernelImagePath
-
-		smt := true
-		trackDirtyPages := false // TODO(huang-jl): should we use it to do working set detection?
-		machineCfg := models.MachineConfiguration{
-			VcpuCount:       &env.VCpuCount,
-			MemSizeMib:      &env.MemoryMB,
-			Smt:             &smt,
-			TrackDirtyPages: &trackDirtyPages,
-		}
-		cfg.MachineCfg = machineCfg
-		cfg.VMID = env.tmpInstanceID()
-	}
-}
-
-// NOTE the returned config has not set the net namespace
-func getFCConfig(opts ...fcConfigOpt) (*firecracker.Config, error) {
-	networkConfig, err := network.GetDefaultCNINetworkConfig()
-	if err != nil {
-		return nil, fmt.Errorf("error get default cni network config: %w", err)
-	}
-	// THE ip args will be set by sdk
-	kernelArgs := "quiet loglevel=1 reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on"
-	// NOTE (huang-jl): we do not need set the socketPath here
-	// as we are using VmmCommandBuilder
-	cfg := &firecracker.Config{
-		// disable validation since kernel image not be prepared before run the cmd
-		DisableValidation: true,
-		KernelArgs:        kernelArgs,
-		MmdsVersion:       firecracker.MMDSv2,
-		NetworkInterfaces: []firecracker.NetworkInterface{networkConfig},
-	}
-
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	return cfg, nil
-}
-
-func startFCVM(
+func (s *Snapshot) startFcVM(
 	ctx context.Context,
 	tracer trace.Tracer,
 	fcBinaryPath string,
-	network *network.FCNetwork,
+	network *FcNetwork,
 	env *Env,
-) (*firecracker.Machine, error) {
+) error {
 	childCtx, childSpan := tracer.Start(ctx, "start-fc-process")
 	defer childSpan.End()
 
-	// api-socket of FC
-	socketFileName := fmt.Sprintf("fc-sock-%s.sock", env.EnvID)
-	socketPath := filepath.Join(tmpSocketDir, socketFileName)
-
-	vmCfg, err := getFCConfig(withEnv(env), withNetwork(network))
-	if err != nil {
-		return nil, fmt.Errorf("error get fc config: %w", err)
+	if s.fc != nil {
+		err := fmt.Errorf("already start fc in snapshot")
+		telemetry.ReportError(childCtx, err)
+		return err
 	}
 
 	kernelDirOnHost := env.KernelDirPath()
 	kernelDirOnVM := consts.KernelMountDir
-	//setup stdout and stdin
-	fcVMStdoutWriter := telemetry.NewEventWriter(childCtx, "stdout")
-	fcVMStderrWriter := telemetry.NewEventWriter(childCtx, "stderr")
 
 	kernelMountCmd := fmt.Sprintf(
 		"mount --bind %s %s && ",
 		kernelDirOnHost,
 		kernelDirOnVM,
 	)
+	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", network.namespaceID)
 	fcCmd := fmt.Sprintf(
 		"%s --api-sock %s",
 		fcBinaryPath,
-		socketPath,
+		env.getSocketPath(),
 	)
 
-	vmBuilder := firecracker.VMCommandBuilder{}.
-		WithBin("unshare").
-		AddArgs("-pm", "--kill-child", "--", "bash", "-c").
-		AddArgs(kernelMountCmd + fcCmd).
-		WithStdout(fcVMStdoutWriter).
-		WithStderr(fcVMStderrWriter)
+	s.fc = exec.CommandContext(childCtx, "unshare", "-pm", "--kill-child", "--", "bash", "-c", kernelMountCmd+inNetNSCmd+fcCmd)
 
-	cmd := vmBuilder.Build(childCtx)
-	telemetry.ReportEvent(childCtx, "start fc vm", attribute.String("cmd", cmd.String()))
-	vm, err := firecracker.NewMachine(childCtx, *vmCfg, firecracker.WithProcessRunner(cmd))
+	fcVMStdoutWriter := telemetry.NewEventWriter(childCtx, "vmm stdout")
+	fcVMStderrWriter := telemetry.NewEventWriter(childCtx, "vmm stderr")
+
+	stdoutPipe, err := s.fc.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("error new machine: %w", err)
+		errMsg := fmt.Errorf("error creating fc stdout pipe: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
 	}
-	if err := vm.Start(childCtx); err != nil {
-		return nil, fmt.Errorf("error when start vm instance: %w", err)
+
+	stderrPipe, err := s.fc.StderrPipe()
+	if err != nil {
+		errMsg := fmt.Errorf("error creating fc stderr pipe: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		closeErr := stdoutPipe.Close()
+		if closeErr != nil {
+			closeErrMsg := fmt.Errorf("error closing fc stdout pipe: %w", closeErr)
+			telemetry.ReportError(childCtx, closeErrMsg)
+		}
+
+		return errMsg
 	}
-	return vm, nil
+
+	var outputWaitGroup sync.WaitGroup
+	outputWaitGroup.Add(1)
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			fcVMStdoutWriter.Write([]byte(line))
+		}
+
+		outputWaitGroup.Done()
+	}()
+
+	outputWaitGroup.Add(1)
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			fcVMStderrWriter.Write([]byte(line))
+		}
+
+		outputWaitGroup.Done()
+	}()
+
+	err = s.fc.Start()
+	if err != nil {
+		errMsg := fmt.Errorf("error starting fc process: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "started fc process")
+
+	go func() {
+		anonymousChildCtx, anonymousChildSpan := tracer.Start(ctx, "handle-fc-process-wait")
+		defer anonymousChildSpan.End()
+
+		outputWaitGroup.Wait()
+
+		waitErr := s.fc.Wait()
+		if err != nil {
+			errMsg := fmt.Errorf("error waiting for fc process: %w", waitErr)
+			telemetry.ReportError(anonymousChildCtx, errMsg)
+		} else {
+			telemetry.ReportEvent(anonymousChildCtx, "fc process exited")
+		}
+	}()
+
+	// Wait for the FC process to start so we can use FC API
+	err = client.WaitForSocket(s.socketPath, socketWaitTimeout)
+	if err != nil {
+		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "fc process created socket")
+	return nil
 }
 
-func (s *Snapshot) cleanupVM(ctx context.Context, tracer trace.Tracer) error {
-	_, childSpan := tracer.Start(ctx, "cleanup-vm")
+// 1. setup boot args (including ip=xxx)
+// 2. setup drivers (rootfs.ext4)
+// 3. setup network interface (tap device)
+// 4. setup mmds service (but we do not need populate any metadata for now)
+// 5. machine config (including vpu, mem)
+// 6. finally start vm
+func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "configure-fc-vm")
 	defer childSpan.End()
-	err := s.vm.StopVMM()
-	if err != nil {
-		return fmt.Errorf("stop vmm failed: %w", err)
+
+	ip := fmt.Sprintf(
+		"%s::%s:%s:instance:eth0:off:8.8.8.8",
+		consts.FcAddr,
+		consts.FcTapAddress,
+		consts.FcMaskLong,
+	)
+	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
+	kernelImagePath := s.env.KernelMountPath()
+	bootSourceConfig := operations.PutGuestBootSourceParams{
+		Context: childCtx,
+		Body: &models.BootSource{
+			BootArgs:        kernelArgs,
+			KernelImagePath: &kernelImagePath,
+		},
 	}
-	// wait for vm to cleanup
-	// more details need to see firecracker-go-sdk
-	return s.vm.Wait(ctx)
+
+	_, err := s.client.Operations.PutGuestBootSource(&bootSourceConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error setting fc boot source config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "set fc boot source config")
+
+	rootfs := "rootfs"
+	ioEngine := "Async"
+	isRootDevice := true
+	isReadOnly := false
+	pathOnHost := s.env.tmpRootfsPath()
+	driversConfig := operations.PutGuestDriveByIDParams{
+		Context: childCtx,
+		DriveID: rootfs,
+		Body: &models.Drive{
+			DriveID:      &rootfs,
+			PathOnHost:   pathOnHost,
+			IsRootDevice: &isRootDevice,
+			IsReadOnly:   isReadOnly,
+			IoEngine:     &ioEngine,
+		},
+	}
+
+	_, err = s.client.Operations.PutGuestDriveByID(&driversConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error setting fc drivers config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "set fc drivers config")
+
+	ifaceID := consts.FcIfaceID
+	hostDevName := consts.FcTapName
+	networkConfig := operations.PutGuestNetworkInterfaceByIDParams{
+		Context: childCtx,
+		IfaceID: ifaceID,
+		Body: &models.NetworkInterface{
+			IfaceID:     &ifaceID,
+			GuestMac:    consts.FcMacAddress,
+			HostDevName: &hostDevName,
+		},
+	}
+
+	_, err = s.client.Operations.PutGuestNetworkInterfaceByID(&networkConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error setting fc network config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "set fc network config")
+
+	smt := true
+	trackDirtyPages := false
+
+	machineConfig := &models.MachineConfiguration{
+		VcpuCount:       &s.env.VCpuCount,
+		MemSizeMib:      &s.env.MemoryMB,
+		Smt:             &smt,
+		TrackDirtyPages: &trackDirtyPages,
+	}
+
+	if s.env.HugePages {
+		machineConfig.HugePages = models.MachineConfigurationHugePagesNr2M
+	}
+
+	machineConfigParams := operations.PutMachineConfigurationParams{
+		Context: childCtx,
+		Body:    machineConfig,
+	}
+
+	_, err = s.client.Operations.PutMachineConfiguration(&machineConfigParams)
+	if err != nil {
+		errMsg := fmt.Errorf("error setting fc machine config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "set fc machine config")
+
+	mmdsVersion := "V2"
+	mmdsConfig := operations.PutMmdsConfigParams{
+		Context: childCtx,
+		Body: &models.MmdsConfig{
+			Version:           &mmdsVersion,
+			NetworkInterfaces: []string{consts.FcIfaceID},
+		},
+	}
+
+	_, err = s.client.Operations.PutMmdsConfig(&mmdsConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error setting fc mmds config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "set fc mmds config")
+
+	// We may need to sleep before start - previous configuration is processes asynchronously. How to do this sync or in one go?
+	time.Sleep(waitTimeForFCConfig)
+
+	start := models.InstanceActionInfoActionTypeInstanceStart
+	startActionParams := operations.CreateSyncActionParams{
+		Context: childCtx,
+		Info: &models.InstanceActionInfo{
+			ActionType: &start,
+		},
+	}
+
+	_, err = s.client.Operations.CreateSyncAction(&startActionParams)
+	if err != nil {
+		errMsg := fmt.Errorf("error starting fc: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "started fc")
+
+	return nil
+}
+
+func (s *Snapshot) cleanupFcVM(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "cleanup-vm")
+	defer childSpan.End()
+	if s.fc != nil {
+		err := s.fc.Cancel()
+		if err != nil {
+			errMsg := fmt.Errorf("error killing fc process: %w", err)
+			telemetry.ReportError(childCtx, errMsg)
+		} else {
+			telemetry.ReportEvent(childCtx, "killed fc process")
+		}
+	}
+
+	err := os.RemoveAll(s.socketPath)
+	if err != nil {
+		errMsg := fmt.Errorf("error removing fc socket %w", err)
+		telemetry.ReportError(childCtx, errMsg)
+	} else {
+		telemetry.ReportEvent(childCtx, "removed fc socket")
+	}
+	return nil
 }
 
 func (s *Snapshot) pauseVM(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "pause-vm")
 	defer childSpan.End()
-	return s.vm.PauseVM(childCtx)
+	state := models.VMStatePaused
+	pauseConfig := operations.PatchVMParams{
+		Context: childCtx,
+		Body: &models.VM{
+			State: &state,
+		},
+	}
+
+	_, err := s.client.Operations.PatchVM(&pauseConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error pausing vm: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "paused fc")
+
+	return nil
 }
 
 func (s *Snapshot) createSnapshot(ctx context.Context, tracer trace.Tracer) error {
@@ -178,20 +363,44 @@ func (s *Snapshot) createSnapshot(ctx context.Context, tracer trace.Tracer) erro
 	defer childSpan.End()
 	memfilePath := s.env.tmpMemfilePath()
 	snapfileName := s.env.tmpSnapfilePath()
-	return s.vm.CreateSnapshot(
-		childCtx,
-		memfilePath,
-		snapfileName,
-		func(csp *operations.CreateSnapshotParams) {
-			csp.Body.SnapshotType = models.SnapshotCreateParamsSnapshotTypeFull
-		})
+
+	params := operations.CreateSnapshotParams{
+		Context: childCtx,
+		Body: &models.SnapshotCreateParams{
+			MemFilePath:  &memfilePath,
+			SnapshotPath: &snapfileName,
+			SnapshotType: models.SnapshotCreateParamsSnapshotTypeFull,
+		},
+	}
+
+	_, err := s.client.Operations.CreateSnapshot(&params)
+	if err != nil {
+		errMsg := fmt.Errorf("error creating vm snapshot: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "created vm snapshot")
+
+	return nil
 }
 
-func NewSnapshot(ctx context.Context, tracer trace.Tracer, env *Env, network *network.FCNetwork, rootfs *Rootfs) (*Snapshot, error) {
+func NewSnapshot(ctx context.Context, tracer trace.Tracer, env *Env, network *FcNetwork, rootfs *Rootfs) (*Snapshot, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-snapshot")
 	defer childSpan.End()
 
-	vm, err := startFCVM(
+	fcSocketPath := env.getSocketPath()
+	client := client.NewFirecrackerAPI(fcSocketPath)
+
+	snapshot := &Snapshot{
+		socketPath: fcSocketPath,
+		client:     client,
+		env:        env,
+		fc:         nil,
+	}
+
+	err := snapshot.startFcVM(
 		childCtx,
 		tracer,
 		env.FirecrackerBinaryPath,
@@ -205,15 +414,14 @@ func NewSnapshot(ctx context.Context, tracer trace.Tracer, env *Env, network *ne
 	}
 	telemetry.ReportEvent(childCtx, "started fc process")
 
-	snapshot := &Snapshot{
-		vm:  vm,
-		env: env,
+	defer snapshot.cleanupFcVM(childCtx, tracer)
+
+	err = snapshot.configureFcVM(childCtx, tracer)
+	if err != nil {
+		errMsg := fmt.Errorf("error configure fc vm: %w", err)
+
+		return nil, errMsg
 	}
-	defer func() {
-		if err := snapshot.cleanupVM(childCtx, tracer); err != nil {
-			telemetry.ReportError(childCtx, err)
-		}
-	}()
 	// Wait for all necessary things in FC to start
 	// TODO: Maybe init should signalize when it's ready?
 	time.Sleep(waitTimeForFCStart)

@@ -5,5 +5,6 @@
   "memMB": 2048,
   "vcpu": 2,
   "diskMB": 5120,
-  "kernelVersion": "5.10.186"
+  "kernelVersion": "5.10.186",
+  "hugePages": false
 }

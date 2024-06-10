@@ -1,9 +1,7 @@
 package main
 
-import (
-  sdk "github.com/firecracker-microvm/firecracker-go-sdk"
-)
+import ()
 
 func main() {
-  return
+	return
 }

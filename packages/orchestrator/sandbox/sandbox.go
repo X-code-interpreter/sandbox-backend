@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
-	"github.com/firecracker-microvm/firecracker-go-sdk"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+)
+
+const (
+	waitSocketTimeout = 2 * time.Second
 )
 
 var httpClient = http.Client{
@@ -23,22 +24,11 @@ var httpClient = http.Client{
 }
 
 type Sandbox struct {
-	vm      *firecracker.Machine
+	fc      *FcVM
 	env     *SandboxFiles
 	config  *orchestrator.SandboxConfig
+	network *FcNetwork
 	startAt time.Time
-	network *network.FCNetwork
-	ipAddr  string
-}
-
-// The envd will use these information for logging
-// for more check the envd/internal/log/exporter/mmds.go
-type MmdsMetadata struct {
-	InstanceID string `json:"instanceID"`
-	EnvID      string `json:"envID"`
-	Address    string `json:"address"`
-	TraceID    string `json:"traceID,omitempty"`
-	TeamID     string `json:"teamID,omitempty"`
 }
 
 func NewSandbox(
@@ -46,6 +36,7 @@ func NewSandbox(
 	tracer trace.Tracer,
 	dns *DNS,
 	config *orchestrator.SandboxConfig,
+	nm *FcNetworkManager,
 ) (*Sandbox, error) {
 	childCtx, childSpan := tracer.Start(
 		ctx,
@@ -54,10 +45,9 @@ func NewSandbox(
 	)
 	defer childSpan.End()
 
-	// sandboxID supposed to be unique (e.g., can be generate from some random alg)
-	fcNet, err := network.NewFCNetwork(childCtx, tracer, FCNetNsName(config.SandboxID))
+	fcNet, err := nm.NewFcNetwork(config.SandboxID)
 	if err != nil {
-		errMsg := fmt.Errorf("failed to create namespaces: %w", err)
+		errMsg := fmt.Errorf("failed to create fc network: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return nil, errMsg
@@ -65,7 +55,7 @@ func NewSandbox(
 
 	defer func() {
 		if err != nil {
-			ntErr := fcNet.Cleanup(childCtx, tracer)
+			ntErr := fcNet.Cleanup(childCtx, tracer, dns)
 			if ntErr != nil {
 				errMsg := fmt.Errorf("error removing network namespace after failed instance start: %w", ntErr)
 				telemetry.ReportError(childCtx, errMsg)
@@ -74,6 +64,13 @@ func NewSandbox(
 			}
 		}
 	}()
+	err = fcNet.Setup(childCtx, tracer, dns)
+	if err != nil {
+		errMsg := fmt.Errorf("failed to setup fc network: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return nil, errMsg
+	}
 
 	fsEnv, err := newSandboxFiles(
 		childCtx,
@@ -116,7 +113,7 @@ func NewSandbox(
 		}
 	}()
 
-	vm, err := newFCVM(
+	fc, err := newFCVM(
 		childCtx,
 		tracer,
 		config.SandboxID,
@@ -129,7 +126,7 @@ func NewSandbox(
 		return nil, errMsg
 	}
 
-	err = startVM(childCtx, tracer, vm, config.SandboxID, "TODO(huang-jl)", config.TemplateID)
+	err = fc.startVM(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to start FC: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -138,15 +135,12 @@ func NewSandbox(
 	}
 
 	instance := &Sandbox{
-		vm:      vm,
+		fc:      fc,
 		env:     fsEnv,
 		config:  config,
 		network: fcNet,
-		ipAddr:  vm.Cfg.NetworkInterfaces[0].StaticConfiguration.IPConfiguration.IPAddr.String(),
+		startAt: time.Now(),
 	}
-
-	telemetry.ReportEvent(childCtx, "initialized FC", attribute.String("ip", instance.ipAddr))
-
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
 
 	go func() {
@@ -160,130 +154,7 @@ func NewSandbox(
 		}
 	}()
 
-	instance.startAt = time.Now()
-
 	return instance, nil
-}
-
-func newFCVM(
-	ctx context.Context,
-	tracer trace.Tracer,
-	sandboxID string,
-	env *SandboxFiles,
-	fcNet *network.FCNetwork,
-) (*firecracker.Machine, error) {
-	childCtx, childSpan := tracer.Start(ctx, "new-fc-vm")
-	defer childSpan.End()
-
-	// we bind mount the EnvInstancePath (where contains the rootfs)
-	// to the running path (where snapshotting happend)
-	rootfsMountCmd := fmt.Sprintf(
-		"mount --bind %s %s && ",
-		env.EnvInstancePath,
-		env.RunningPath,
-	)
-
-	kernelMountCmd := fmt.Sprintf(
-		"mount --bind %s %s && ",
-		env.KernelDirPath,
-		env.KernelMountDirPath,
-	)
-
-	fcCmd := fmt.Sprintf(
-		"%s --api-sock %s",
-		env.FirecrackerBinaryPath,
-		env.SocketPath,
-	)
-	//setup stdout and stdin
-	fcVMStdoutWriter := telemetry.NewEventWriter(childCtx, fmt.Sprintf("vmm %s stdout", sandboxID))
-	fcVMStderrWriter := telemetry.NewEventWriter(childCtx, fmt.Sprintf("vmm %s stderr", sandboxID))
-
-	networkInterface, err := network.GetDefaultCNINetworkConfig()
-	if err != nil {
-		errMsg := fmt.Errorf("failed to get cni network config: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		return nil, errMsg
-	}
-	// disable validation since
-	// 1. kernel is not prepared before kernelMountCmd
-	// 2. we can skip to pass driver config as it is useless
-	cfg := firecracker.Config{
-		DisableValidation: true,
-		LogLevel:          "Info",
-		LogPath:           filepath.Join(env.EnvInstancePath, "fc.log"),
-		NetworkInterfaces: []firecracker.NetworkInterface{networkInterface},
-		VMID:              sandboxID,
-		NetNS:             fcNet.NetNsPath(),
-		Snapshot:          env.getSnapshotConfig(),
-	}
-
-	vmmBuilder := firecracker.VMCommandBuilder{}.
-		WithBin("unshare").
-		AddArgs("-pm", "--kill-child", "--", "bash", "-c").
-		AddArgs(rootfsMountCmd + kernelMountCmd + fcCmd).
-		WithStdout(fcVMStdoutWriter).
-		WithStderr(fcVMStderrWriter)
-	cmd := vmmBuilder.Build(childCtx)
-	vm, err := firecracker.NewMachine(childCtx, cfg, firecracker.WithProcessRunner(cmd))
-	if err != nil {
-		errMsg := fmt.Errorf("fc sdk new machine failed: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
-		return nil, errMsg
-	}
-	return vm, nil
-}
-
-func startVM(
-	ctx context.Context,
-	tracer trace.Tracer,
-	vm *firecracker.Machine,
-	sandboxID,
-	logCollectorAddr,
-	envID string,
-) error {
-	childCtx, childSpan := tracer.Start(ctx, "start-vm")
-	defer childSpan.End()
-	metadata := MmdsMetadata{
-		InstanceID: sandboxID,
-		EnvID:      envID,
-		Address:    logCollectorAddr,
-	}
-	err := vm.Start(childCtx)
-	if err != nil {
-		stopVM(childCtx, tracer, vm)
-
-		errMsg := fmt.Errorf("start vm failed: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
-		return errMsg
-	}
-	defer func() {
-		if err != nil {
-			stopVM(childCtx, tracer, vm)
-		}
-	}()
-
-	err = vm.SetMetadata(childCtx, &metadata)
-	if err != nil {
-		errMsg := fmt.Errorf("set mmds failed: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
-		return errMsg
-	}
-	return nil
-}
-
-func stopVM(ctx context.Context, tracer trace.Tracer, vm *firecracker.Machine) {
-	childCtx, childSpan := tracer.Start(ctx, "stop-fc")
-	defer childSpan.End()
-
-	err := vm.StopVMM()
-	if err != nil {
-		errMsg := fmt.Errorf("failed to send KILL to FC process: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-	} else {
-		telemetry.ReportEvent(childCtx, "sent KILL to FC process")
-	}
-
-	return
 }
 
 func (s *Sandbox) EnsureClockSync(ctx context.Context) error {
@@ -307,7 +178,7 @@ syncLoop:
 }
 
 func (s *Sandbox) syncClock(ctx context.Context) error {
-	address := fmt.Sprintf("http://%s:%d/sync", s.ipAddr, consts.DefaultEnvdServerPort)
+	address := fmt.Sprintf("http://%s:%d/sync", s.network.HostClonedIP(), consts.DefaultEnvdServerPort)
 
 	request, err := http.NewRequestWithContext(ctx, "POST", address, nil)
 	if err != nil {
@@ -337,20 +208,12 @@ func (s *Sandbox) CleanupAfterFCStop(
 	childCtx, childSpan := tracer.Start(ctx, "delete-instance")
 	defer childSpan.End()
 
-	err := s.network.Cleanup(childCtx, tracer)
+	err := s.network.Cleanup(childCtx, tracer, dns)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot remove network when destroying task: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 	} else {
 		telemetry.ReportEvent(childCtx, "removed network")
-	}
-
-	err = dns.Remove(s.config.SandboxID)
-	if err != nil {
-		errMsg := fmt.Errorf("failed to remove instance in etc hosts: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-	} else {
-		telemetry.ReportEvent(childCtx, "removed instance in etc hosts")
 	}
 
 	err = s.env.Cleanup(childCtx, tracer)
@@ -360,9 +223,16 @@ func (s *Sandbox) CleanupAfterFCStop(
 	} else {
 		telemetry.ReportEvent(childCtx, "deleted instance files")
 	}
+
+	// TODO(huang-jl) put idx backed to network manager?
 }
 
-// TODO(huang-jl): does wait need span / tracer ?
-func (s *Sandbox) Wait(ctx context.Context) error {
-	return s.vm.Wait(ctx)
+func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "stop-sandbox", trace.WithAttributes())
+	defer childSpan.End()
+	return s.fc.stopVM(childCtx, tracer)
+}
+
+func (s *Sandbox) Wait() error {
+	return s.fc.wait()
 }

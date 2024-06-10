@@ -70,7 +70,7 @@ run-env:
 
 update-envd-locally:
 	make build
-	cp bin/envd /fc-vm/envd
+	cp bin/envd /mnt/pmem1/fc-vm/envd
 
 build-and-upload:
 	make build

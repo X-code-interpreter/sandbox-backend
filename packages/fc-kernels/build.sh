@@ -1,5 +1,7 @@
 #!/bin/bash
 
+BASE_DIR=/mnt/pmem1
+
 set -euo pipefail
 
 function build_version {
@@ -17,8 +19,8 @@ function build_version {
 
   echo "Copying finished build to builds directory"
   # mkdir -p "../builds/vmlinux-${version}"
-  mkdir -p /fc-kernels/${version}
-  cp vmlinux "/fc-kernels/${version}/vmlinux"
+  mkdir -p ${BASE_DIR}/fc-kernels/${version}
+  cp vmlinux "${BASE_DIR}/fc-kernels/${version}/vmlinux"
 }
 
 echo "Cloning the linux kernel repository"

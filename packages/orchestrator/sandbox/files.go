@@ -2,14 +2,14 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/KarpelesLab/reflink"
-	"github.com/firecracker-microvm/firecracker-go-sdk"
-	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -18,16 +18,16 @@ import (
 )
 
 const (
-	RootfsName   = "rootfs.ext4"
-	SnapfileName = "snapfile"
-	MemfileName  = "memfile"
-
 	EnvInstancesDirName = "env-instances"
 
 	socketWaitTimeout = 2 * time.Second
+
+	cgroupfsPath     = "/sys/fs/cgroup"
+	cgroupParentName = "code-interpreter"
 )
 
 type SandboxFiles struct {
+	EnvID string
 	// EnvPath (a dir) contains the rootfs files in env build (see template manager)
 	EnvPath string
 	// Different instance of same Env need has its own dir
@@ -47,6 +47,8 @@ type SandboxFiles struct {
 	KernelMountDirPath string
 
 	FirecrackerBinaryPath string
+
+	CgroupPath string
 }
 
 // waitForSocket waits for the given file to exist
@@ -109,6 +111,8 @@ func newSandboxFiles(
 	// Create kernel path
 	kernelPath := filepath.Join(kernelsDir, kernelVersion)
 
+	cgroupPath := filepath.Join(cgroupfsPath, cgroupParentName, instanceID)
+
 	childSpan.SetAttributes(
 		attribute.String("instance.env_instance_path", envInstancePath),
 		attribute.String("instance.running_path", runningPath),
@@ -116,9 +120,11 @@ func newSandboxFiles(
 		attribute.String("instance.kernel.mount_path", filepath.Join(kernelMountDir, consts.KernelName)),
 		attribute.String("instance.kernel.path", filepath.Join(kernelPath, consts.KernelName)),
 		attribute.String("instance.firecracker.path", firecrackerBinaryPath),
+		attribute.String("instance.cgroup.path", cgroupPath),
 	)
 
 	return &SandboxFiles{
+		EnvID:                 envID,
 		EnvInstancePath:       envInstancePath,
 		EnvPath:               envPath,
 		RunningPath:           runningPath,
@@ -126,23 +132,37 @@ func newSandboxFiles(
 		KernelDirPath:         kernelPath,
 		KernelMountDirPath:    kernelMountDir,
 		FirecrackerBinaryPath: firecrackerBinaryPath,
+		CgroupPath:            cgroupPath,
 	}, nil
 }
 
 func (env *SandboxFiles) Ensure(ctx context.Context) error {
 	err := os.MkdirAll(env.EnvInstancePath, 0o777)
 	if err != nil {
-		telemetry.ReportError(ctx, err)
+		errMsg := fmt.Errorf("error making env instance dir: %w", err)
+		telemetry.ReportError(ctx, errMsg)
+		return errMsg
 	}
 
-	mkdirErr := os.MkdirAll(env.RunningPath, 0o777)
-	if mkdirErr != nil {
-		telemetry.ReportError(ctx, err)
+	err = os.MkdirAll(env.RunningPath, 0o777)
+	if err != nil {
+		errMsg := fmt.Errorf("error making env running dir: %w", err)
+		telemetry.ReportError(ctx, errMsg)
+		return errMsg
 	}
 
+	err = os.MkdirAll(env.CgroupPath, 0o755)
+	if err != nil {
+		errMsg := fmt.Errorf("error making cgroup: %w", err)
+		telemetry.ReportError(ctx, errMsg)
+		return errMsg
+	}
+
+	// NOTE(huang-jl): ext4 does not support reflink
+	// so we need to use xfs
 	err = reflink.Always(
-		filepath.Join(env.EnvPath, RootfsName),
-		filepath.Join(env.EnvInstancePath, RootfsName),
+		filepath.Join(env.EnvPath, consts.RootfsName),
+		filepath.Join(env.EnvInstancePath, consts.RootfsName),
 	)
 	if err != nil {
 		errMsg := fmt.Errorf("error creating reflinked rootfs: %w", err)
@@ -166,11 +186,13 @@ func (env *SandboxFiles) Cleanup(
 		),
 	)
 	defer childSpan.End()
+	var finalErr error
 
 	err := os.RemoveAll(env.EnvInstancePath)
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting env instance files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
+		finalErr = errors.Join(finalErr, errMsg)
 	} else {
 		// TODO: Check the socket?
 		telemetry.ReportEvent(childCtx, "removed all env instance files")
@@ -181,24 +203,42 @@ func (env *SandboxFiles) Cleanup(
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting socket: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
+		finalErr = errors.Join(finalErr, errMsg)
 	} else {
 		telemetry.ReportEvent(childCtx, "removed socket")
 	}
 
-	return nil
+	err = os.RemoveAll(env.CgroupPath)
+	if err != nil {
+		errMsg := fmt.Errorf("error remove cgroup path: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		finalErr = errors.Join(finalErr, errMsg)
+	} else {
+		telemetry.ReportEvent(childCtx, "removed socket")
+	}
+
+	return finalErr
 }
 
-func (env *SandboxFiles) getSnapshotConfig() firecracker.SnapshotConfig {
+func (env *SandboxFiles) getSnapshotLoadParams() models.SnapshotLoadParams {
 	membackendType := models.MemoryBackendBackendTypeFile
-	membackendPath := filepath.Join(env.EnvPath, MemfileName)
-	snapshotPath := filepath.Join(env.EnvPath, SnapfileName)
-	return firecracker.SnapshotConfig{
+	membackendPath := env.getMemfilePath()
+	snapshotPath := env.getSnapshotPath()
+	return models.SnapshotLoadParams{
 		MemBackend: &models.MemoryBackend{
 			BackendPath: &membackendPath,
 			BackendType: &membackendType,
 		},
-		SnapshotPath:        snapshotPath,
+		SnapshotPath:        &snapshotPath,
 		ResumeVM:            true,
 		EnableDiffSnapshots: false,
 	}
+}
+
+func (env *SandboxFiles) getSnapshotPath() string {
+	return filepath.Join(env.EnvPath, consts.SnapfileName)
+}
+
+func (env *SandboxFiles) getMemfilePath() string {
+	return filepath.Join(env.EnvPath, consts.MemfileName)
 }

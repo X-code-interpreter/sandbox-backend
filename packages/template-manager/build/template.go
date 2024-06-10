@@ -9,18 +9,13 @@ import (
 	"text/template"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel/trace"
 )
 
 const (
-	rootfsName   = "rootfs.ext4"
-	snapfileName = "snapfile"
-	memfileName  = "memfile"
-
-	buildDirName = "builds"
+	tmpSocketDir = "/tmp"
 )
 
 //go:embed provision.sh
@@ -63,6 +58,8 @@ type Env struct {
 	// if it is empty, it will be "e2bdev/code-interpreter:latest"
 	// optional
 	DockerImage string `json:"dockerImg"`
+
+	HugePages bool `json:"hugePages,omitempty"`
 }
 
 // Path to the directory where the env is stored.
@@ -71,15 +68,15 @@ func (e *Env) envDirPath() string {
 }
 
 func (e *Env) envRootfsPath() string {
-	return filepath.Join(e.envDirPath(), rootfsName)
+	return filepath.Join(e.envDirPath(), consts.RootfsName)
 }
 
 func (e *Env) envMemfilePath() string {
-	return filepath.Join(e.envDirPath(), memfileName)
+	return filepath.Join(e.envDirPath(), consts.MemfileName)
 }
 
 func (e *Env) envSnapfilePath() string {
-	return filepath.Join(e.envDirPath(), snapfileName)
+	return filepath.Join(e.envDirPath(), consts.SnapfileName)
 }
 
 func (e *Env) tmpRunningPath() string {
@@ -88,15 +85,15 @@ func (e *Env) tmpRunningPath() string {
 
 // The running directory where save the rootfs
 func (e *Env) tmpRootfsPath() string {
-	return filepath.Join(e.tmpRunningPath(), rootfsName)
+	return filepath.Join(e.tmpRunningPath(), consts.RootfsName)
 }
 
 func (e *Env) tmpMemfilePath() string {
-	return filepath.Join(e.tmpRunningPath(), memfileName)
+	return filepath.Join(e.tmpRunningPath(), consts.MemfileName)
 }
 
 func (e *Env) tmpSnapfilePath() string {
-	return filepath.Join(e.tmpRunningPath(), snapfileName)
+	return filepath.Join(e.tmpRunningPath(), consts.SnapfileName)
 }
 
 func (e *Env) tmpInstanceID() string {
@@ -207,7 +204,7 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 		return errMsg
 	}
 
-	network, err := network.NewFCNetwork(childCtx, tracer, e.tmpInstanceID())
+	network, err := NewFcNetwork(childCtx, tracer, e)
 	if err != nil {
 		errMsg := fmt.Errorf("error network setup for FC while building env '%s' during build: %w", e.EnvID, err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -242,4 +239,10 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 	}
 
 	return nil
+}
+
+// api-socket of FC
+func (e *Env) getSocketPath() string {
+	socketFileName := fmt.Sprintf("fc-build-sock-%s.sock", e.EnvID)
+	return filepath.Join(tmpSocketDir, socketFileName)
 }
