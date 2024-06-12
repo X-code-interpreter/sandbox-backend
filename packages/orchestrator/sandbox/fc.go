@@ -210,7 +210,7 @@ func (fc *FcVM) startVM(
 	}
 	telemetry.ReportEvent(childCtx, "vm started")
 
-	err = client.WaitForSocket(fc.env.SocketPath, waitSocketTimeout)
+	err = client.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("wait for fc socket failed: %w", err)
 		telemetry.ReportError(childCtx, errMsg)

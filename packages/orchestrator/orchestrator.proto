@@ -23,7 +23,6 @@ message SandboxCreateRequest {
 
 // Data about the sandbox.
 message SandboxCreateResponse {
-  string clientID = 1;
 }
 
 // Data required for action on a specified sandbox.
@@ -33,8 +32,7 @@ message SandboxRequest {
 
 message RunningSandbox {
   SandboxConfig config = 1;
-  string clientID = 2;
-  google.protobuf.Timestamp startTime = 9;
+  google.protobuf.Timestamp startTime = 2;
 }
 
 // Data returned after listing all the sandboxes.

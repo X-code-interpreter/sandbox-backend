@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
@@ -26,9 +28,14 @@ var httpClient = http.Client{
 type Sandbox struct {
 	fc      *FcVM
 	env     *SandboxFiles
-	config  *orchestrator.SandboxConfig
+	Config  *orchestrator.SandboxConfig
 	network *FcNetwork
-	startAt time.Time
+	StartAt time.Time
+
+	waitOnce  sync.Once
+	cleanOnce sync.Once
+	waitRes   error
+	cleanRes  error
 }
 
 func NewSandbox(
@@ -137,9 +144,9 @@ func NewSandbox(
 	instance := &Sandbox{
 		fc:      fc,
 		env:     fsEnv,
-		config:  config,
+		Config:  config,
 		network: fcNet,
-		startAt: time.Now(),
+		StartAt: time.Now(),
 	}
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
 
@@ -200,13 +207,28 @@ func (s *Sandbox) syncClock(ctx context.Context) error {
 	return nil
 }
 
+// Clean up the resource related to the sandbox (e.g., network, disk...).
+// can be called multiple times
 func (s *Sandbox) CleanupAfterFCStop(
 	ctx context.Context,
 	tracer trace.Tracer,
 	dns *DNS,
-) {
+) error {
+	s.cleanOnce.Do(func() {
+		s.cleanRes = s.cleanupAfterFCStop(ctx, tracer, dns)
+	})
+	return s.cleanRes
+}
+
+func (s *Sandbox) cleanupAfterFCStop(
+	ctx context.Context,
+	tracer trace.Tracer,
+	dns *DNS,
+) error {
 	childCtx, childSpan := tracer.Start(ctx, "delete-instance")
 	defer childSpan.End()
+
+	var finalErr error
 
 	err := s.network.Cleanup(childCtx, tracer, dns)
 	if err != nil {
@@ -216,6 +238,8 @@ func (s *Sandbox) CleanupAfterFCStop(
 		telemetry.ReportEvent(childCtx, "removed network")
 	}
 
+	finalErr = errors.Join(finalErr, err)
+
 	err = s.env.Cleanup(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to delete instance files: %w", err)
@@ -223,8 +247,8 @@ func (s *Sandbox) CleanupAfterFCStop(
 	} else {
 		telemetry.ReportEvent(childCtx, "deleted instance files")
 	}
-
-	// TODO(huang-jl) put idx backed to network manager?
+	finalErr = errors.Join(finalErr, err)
+	return finalErr
 }
 
 func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
@@ -233,6 +257,24 @@ func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
 	return s.fc.stopVM(childCtx, tracer)
 }
 
+// Wait for the sandbox process has been exited and also
+// wait for the cleanup has finished.
+//
+// This can be called multiple times.
+func (s *Sandbox) WaitAndCleanup(ctx context.Context, tracer trace.Tracer, dns *DNS) {
+	s.Wait()
+	s.CleanupAfterFCStop(ctx, tracer, dns)
+}
+
+// Wait for the sandbox process has been exited, can be called
+// multiple times.
 func (s *Sandbox) Wait() error {
-	return s.fc.wait()
+	s.waitOnce.Do(func() {
+		s.waitRes = s.fc.wait()
+	})
+	return s.waitRes
+}
+
+func (s *Sandbox) SandboxID() string {
+	return s.Config.SandboxID
 }

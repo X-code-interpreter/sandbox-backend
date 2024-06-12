@@ -143,7 +143,7 @@ func (s *Snapshot) startFcVM(
 	}()
 
 	// Wait for the FC process to start so we can use FC API
-	err = client.WaitForSocket(s.socketPath, socketWaitTimeout)
+	err = client.WaitForSocket(childCtx, tracer, s.socketPath, socketWaitTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
 

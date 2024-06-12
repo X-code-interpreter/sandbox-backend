@@ -9,6 +9,7 @@ import (
 
 	httptransport "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func NewFirecrackerAPI(socketPath string) *FirecrackerAPI {
@@ -31,17 +32,24 @@ func NewFirecrackerAPI(socketPath string) *FirecrackerAPI {
 	return httpClient
 }
 
-func WaitForSocket(socketPath string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func WaitForSocket(
+	ctx context.Context,
+	tracer trace.Tracer,
+	socketPath string,
+	timeout time.Duration,
+) error {
+	childCtx, childSpan := tracer.Start(ctx, "wait-for-fc-socket")
+	childCtx, cancel := context.WithTimeout(childCtx, timeout)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer func() {
 		cancel()
 		ticker.Stop()
+		childSpan.End()
 	}()
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-childCtx.Done():
+			return childCtx.Err()
 		case <-ticker.C:
 			if _, err := os.Stat(socketPath); err != nil {
 				if os.IsNotExist(err) {
