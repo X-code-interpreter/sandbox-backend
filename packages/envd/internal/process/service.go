@@ -83,7 +83,7 @@ func (s *Service) scanRunCmdOut(pipe io.Reader, t output.OutType, process *Proce
 
 			s.logger.Debugw("Stdout message",
 				"processID", process.ID,
-				"message", line,
+				"msg", line,
 			)
 
 		case output.OutTypeStderr:
@@ -98,7 +98,7 @@ func (s *Service) scanRunCmdOut(pipe io.Reader, t output.OutType, process *Proce
 
 			s.logger.Debugw("Stderr message",
 				"processID", process.ID,
-				"message", line,
+				"msg", line,
 			)
 		}
 	}
@@ -252,7 +252,7 @@ func (s *Service) Start(id ID, cmd string, envVars *map[string]string, rootdir s
 			if waitErr := newProc.cmd.Wait(); waitErr != nil {
 				s.logger.Warnw("Failed waiting for process",
 					"processID", newProc.ID,
-					"error", err,
+					"error", waitErr,
 				)
 			}
 
