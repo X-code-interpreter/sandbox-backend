@@ -124,8 +124,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 Restart=no
-User=root
-Group=root
+User=user
+Group=user
 OOMScoreAdjust=200
 ExecStart=/bin/bash -l -c "{{ .StartCmd }}"
 OOMPolicy=kill
