@@ -16,6 +16,7 @@ import (
 	"github.com/e2b-dev/infra/packages/envd/internal/env"
 	"github.com/e2b-dev/infra/packages/envd/internal/file"
 	"github.com/e2b-dev/infra/packages/envd/internal/filesystem"
+	"github.com/e2b-dev/infra/packages/envd/internal/monitor"
 	"github.com/e2b-dev/infra/packages/envd/internal/port"
 	"github.com/e2b-dev/infra/packages/envd/internal/ports"
 	"github.com/e2b-dev/infra/packages/envd/internal/process"
@@ -169,6 +170,8 @@ func main() {
 		logger.Panicw("failed to register process service", "error", err)
 	}
 
+	monitor := monitor.NewService(logger.Named("systemMonitor"))
+
 	// Start the command passed via the -cmd flag.
 	if startCmdFlag != "" {
 		_, err := processService.Start(startCmdID, startCmdFlag, nil, "/")
@@ -202,6 +205,8 @@ func main() {
 	router.PathPrefix("/debug/pprof").Handler(http.DefaultServeMux)
 	// The /file route used for downloading and uploading files via SDK.
 	router.HandleFunc("/file", fileHandler)
+	// The /metric route used to monitor the system load inside VM
+	router.HandleFunc("/metrics", monitor.GetMetric)
 
 	server := &http.Server{
 		ReadTimeout:  300 * time.Second,

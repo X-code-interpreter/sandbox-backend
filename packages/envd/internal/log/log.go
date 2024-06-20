@@ -26,12 +26,13 @@ func NewLogger(logDir string, debug, mmds bool) (*zap.SugaredLogger, error) {
 	  "outputPaths": [%s],
 	  "errorOutputPaths": [%s],
 	  "encoderConfig": {
-			"timeKey": "timestamp",
-	    "messageKey": "message",
-	    "levelKey": "level",
-	    "levelEncoder": "lowercase",
-			"nameKey": "logger",
-			"stacktraceKey": "stacktrace"
+	  "timeKey": "timestamp",
+	  "messageKey": "message",
+	  "levelKey": "level",
+	  "levelEncoder": "lowercase",
+	  "nameKey": "logger",
+	  "stacktraceKey": "stacktrace",
+	  "callerKey": "caller"
 	  }
 	}`, outputPaths, errorOutputPaths))
 
