@@ -45,14 +45,17 @@ func NewRootfs(ctx context.Context, tracer trace.Tracer, docker *client.Client, 
 		env:    env,
 	}
 
-	// TODO(huang-jl): remove docker image when failed ?
-	err := rootfs.pullDockerImage(childCtx, tracer)
-	if err != nil {
-		errMsg := fmt.Errorf("error building docker image: %w", err)
-		return nil, errMsg
+	// if user set NoPull explictly, then do not pull from registry
+	if !env.NoPull {
+		// TODO(huang-jl): remove docker image when failed ?
+		err := rootfs.pullDockerImage(childCtx, tracer)
+		if err != nil {
+			errMsg := fmt.Errorf("error building docker image: %w", err)
+			return nil, errMsg
+		}
 	}
 
-	err = rootfs.createRootfsFile(childCtx, tracer)
+	err := rootfs.createRootfsFile(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("error creating rootfs file: %w", err)
 		return nil, errMsg
@@ -153,8 +156,8 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		Tty:          false,
 		AttachStdout: true,
 		AttachStderr: true,
-		// setup proxy
-		Env: []string{"https_proxy=http://172.17.0.1:7890", "http_proxy=http://172.17.0.1:7890"},
+		// TODO(huang-jl) provide option to setup proxy
+		// Env: []string{"https_proxy=http://172.17.0.1:7890", "http_proxy=http://172.17.0.1:7890"},
 	}, &container.HostConfig{
 		SecurityOpt: []string{"no-new-privileges"},
 		CapAdd:      []string{"CHOWN", "DAC_OVERRIDE", "FSETID", "FOWNER", "SETGID", "SETUID", "NET_RAW", "SYS_CHROOT"},

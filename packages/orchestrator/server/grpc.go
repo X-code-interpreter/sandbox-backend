@@ -11,6 +11,7 @@ import (
 	"github.com/golang/protobuf/ptypes/empty"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -87,7 +88,9 @@ func (s *server) List(ctx context.Context, _ *empty.Empty) (*orchestrator.Sandbo
 
 // Delete is a gRPC service that kills a sandbox.
 func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxRequest) (*empty.Empty, error) {
-	_, childSpan := s.tracer.Start(ctx, "sandbox-delete")
+	_, childSpan := s.tracer.Start(ctx, "sandbox-delete", trace.WithAttributes(
+		attribute.String("sandbox.id", req.SandboxID),
+	))
 	defer childSpan.End()
 
 	sbx, ok := s.GetSandbox(req.SandboxID)

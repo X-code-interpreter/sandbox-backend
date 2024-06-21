@@ -1,0 +1,11 @@
+# example of metagpt configure
+llm:
+  api_type: "open_llm"  # or azure / ollama / groq etc.
+  model: "Qwen2-57B-A14B-Instruct"  # or gpt-3.5-turbo
+  base_url: "http://192.168.47.247:8008/v1"  # or forward url / other llm url
+  api_key: "EMPTY"
+search:
+  api_type: "ddg"
+
+# setup proxy used by metagpt (e.g., search engine)
+# proxy: "http://127.0.0.1:7890"

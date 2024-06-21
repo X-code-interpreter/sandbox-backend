@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"time"
 
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	"github.com/e2b-dev/infra/packages/envd/internal/clock"
@@ -130,6 +133,7 @@ func main() {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Debugw("panic", r)
+			os.Exit(1)
 		}
 	}()
 	defer logger.Sync()
@@ -170,7 +174,9 @@ func main() {
 		logger.Panicw("failed to register process service", "error", err)
 	}
 
+	reg := prometheus.NewRegistry()
 	monitor := monitor.NewService(logger.Named("systemMonitor"))
+	reg.MustRegister(monitor)
 
 	// Start the command passed via the -cmd flag.
 	if startCmdFlag != "" {
@@ -206,7 +212,9 @@ func main() {
 	// The /file route used for downloading and uploading files via SDK.
 	router.HandleFunc("/file", fileHandler)
 	// The /metric route used to monitor the system load inside VM
-	router.HandleFunc("/metrics", monitor.GetMetric)
+	router.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{
+		Registry: reg,
+	}).ServeHTTP)
 
 	server := &http.Server{
 		ReadTimeout:  300 * time.Second,

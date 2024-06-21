@@ -8,6 +8,12 @@ declare -a BG_TASK_PID=()
 
 function start_docker_service() {
   pushd ${SCRIPT_PATH}
+  # clean previous data
+  docker compose down
+  if $(docker volume list | grep ci-prometheus-data); then
+    echo "start remove prometheus volume..."
+    docker volume rm ci-prometheus-data 
+  fi
   docker compose up --detach --force-recreate
   popd
 }

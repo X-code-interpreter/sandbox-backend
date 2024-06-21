@@ -59,6 +59,9 @@ type Env struct {
 	// optional
 	DockerImage string `json:"dockerImg"`
 
+	// Use local docker image (i.e., do not pull from remote docker registry)
+	NoPull bool `json:"noPull"`
+
 	HugePages bool `json:"hugePages,omitempty"`
 }
 

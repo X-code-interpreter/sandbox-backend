@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -148,16 +150,22 @@ func NewSandbox(
 		network: fcNet,
 		StartAt: time.Now(),
 	}
+
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
-
 	go func() {
-		backgroundCtx := context.Background()
+		bgCtx, span := tracer.Start(context.Background(), "new-sandbox-bg-task")
+		defer span.End()
 
-		clockErr := instance.EnsureClockSync(backgroundCtx)
+		clockErr := instance.EnsureClockSync(bgCtx)
 		if clockErr != nil {
-			telemetry.ReportError(backgroundCtx, fmt.Errorf("failed to sync clock: %w", clockErr))
+			telemetry.ReportError(bgCtx, fmt.Errorf("failed to sync clock: %w", clockErr))
 		} else {
-			telemetry.ReportEvent(backgroundCtx, "clock synced")
+			telemetry.ReportEvent(bgCtx, "clock synced")
+		}
+		if err := instance.setupPrometheusTarget(bgCtx, tracer); err != nil {
+			telemetry.ReportError(bgCtx, fmt.Errorf("failed to setup prometheus target: %w", err))
+		} else {
+			telemetry.ReportEvent(bgCtx, "prometheus target set")
 		}
 	}()
 
@@ -252,7 +260,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 }
 
 func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
-	childCtx, childSpan := tracer.Start(ctx, "stop-sandbox", trace.WithAttributes())
+	childCtx, childSpan := tracer.Start(ctx, "stop-sandbox")
 	defer childSpan.End()
 	return s.fc.stopVM(childCtx, tracer)
 }
@@ -277,4 +285,31 @@ func (s *Sandbox) Wait() error {
 
 func (s *Sandbox) SandboxID() string {
 	return s.Config.SandboxID
+}
+
+func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer) error {
+	_, childSpan := tracer.Start(ctx, "setup-prometheus-target")
+	defer childSpan.End()
+	type PrometheusTargetConfig struct {
+		Targets []string          `json:"targets"`
+		Labels  map[string]string `json:"labels"`
+	}
+	config := []PrometheusTargetConfig{
+		{
+			Targets: []string{"host.docker.internal:6666"},
+			Labels: map[string]string{
+				"id":               s.SandboxID(),
+				"__metrics_path__": fmt.Sprintf("/%s/%d/metrics", s.SandboxID(), consts.DefaultEnvdServerPort),
+			},
+		},
+	}
+	f, err := os.OpenFile(s.env.PrometheusTargetPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+	if err != nil {
+		return fmt.Errorf("open prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
+	}
+	defer f.Close()
+	if err := json.NewEncoder(f).Encode(config); err != nil {
+		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
+	}
+	return nil
 }

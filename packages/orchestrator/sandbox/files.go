@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/KarpelesLab/reflink"
+	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -25,6 +26,27 @@ const (
 	cgroupfsPath     = "/sys/fs/cgroup"
 	cgroupParentName = "code-interpreter"
 )
+
+func init() {
+	_, err := os.Stat(constants.PrometheusTargetsPath)
+	if err == nil {
+		return
+	} else if !os.IsNotExist(err) {
+		errMsg := fmt.Errorf(
+			"stat prometheus target path (%s) failed: %w",
+			constants.PrometheusTargetsPath, err,
+		)
+		panic(errMsg)
+	}
+	// not exist error
+	if err := os.Mkdir(constants.PrometheusTargetsPath, 0o777); err != nil {
+		errMsg := fmt.Errorf(
+			"create prometheus target path (%s) failed: %w",
+			constants.PrometheusTargetsPath, err,
+		)
+		panic(errMsg)
+	}
+}
 
 type SandboxFiles struct {
 	EnvID string
@@ -49,6 +71,8 @@ type SandboxFiles struct {
 	FirecrackerBinaryPath string
 
 	CgroupPath string
+
+	PrometheusTargetPath string
 }
 
 // waitForSocket waits for the given file to exist
@@ -113,6 +137,8 @@ func newSandboxFiles(
 
 	cgroupPath := filepath.Join(cgroupfsPath, cgroupParentName, instanceID)
 
+	prometheusTargetPath := filepath.Join(constants.PrometheusTargetsPath, instanceID+".json")
+
 	childSpan.SetAttributes(
 		attribute.String("instance.env_instance_path", envInstancePath),
 		attribute.String("instance.running_path", runningPath),
@@ -133,6 +159,7 @@ func newSandboxFiles(
 		KernelMountDirPath:    kernelMountDir,
 		FirecrackerBinaryPath: firecrackerBinaryPath,
 		CgroupPath:            cgroupPath,
+		PrometheusTargetPath:   prometheusTargetPath,
 	}, nil
 }
 
@@ -214,7 +241,16 @@ func (env *SandboxFiles) Cleanup(
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		finalErr = errors.Join(finalErr, errMsg)
 	} else {
-		telemetry.ReportEvent(childCtx, "removed socket")
+		telemetry.ReportEvent(childCtx, "removed cgroup path")
+	}
+
+	err = os.Remove(env.PrometheusTargetPath)
+	if err != nil {
+		errMsg := fmt.Errorf("error prometheus target path: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		finalErr = errors.Join(finalErr, errMsg)
+	} else {
+		telemetry.ReportEvent(childCtx, "removed prometheus target path")
 	}
 
 	return finalErr

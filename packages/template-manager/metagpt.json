@@ -1,0 +1,13 @@
+{
+  "template": "metagpt",
+  "startCmd": "",
+  "fcPath": "/mnt/data/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
+  "memMB": 2048,
+  "vcpu": 2,
+  "diskMB": 5120,
+  "kernelVersion": "5.10.186",
+  "hugePages": false,
+  "dockerImg": "jialianghuang/metagpt-sandbox:latest",
+  "noPull": true
+}
+

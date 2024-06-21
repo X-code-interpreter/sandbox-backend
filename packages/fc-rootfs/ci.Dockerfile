@@ -1,7 +1,12 @@
-FROM python:3.10
+FROM python:3.10-bookworm
+
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+  sed -i 's/http:/https:/g' /etc/apt/sources.list.d/debian.sources
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
   build-essential curl git util-linux jq
+
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PIP_DEFAULT_TIMEOUT=100 \
   PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -9,8 +14,11 @@ ENV PIP_DEFAULT_TIMEOUT=100 \
   JUPYTER_CONFIG_PATH="/home/user/.jupyter" \
   IPYTHON_CONFIG_PATH="/home/user/.ipython"
 
-
 COPY ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY ./monitor.py /root/monitor.py
+
+COPY ./ci-requirements.txt requirements.txt
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
   --no-cache-dir -r requirements.txt && \
   ipython kernel install --name "python3" --user

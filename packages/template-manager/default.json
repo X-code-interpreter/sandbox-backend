@@ -7,5 +7,6 @@
   "diskMB": 5120,
   "kernelVersion": "5.10.186",
   "hugePages": false,
-  "dockerImg": "jialianghuang/default-code-interpreter:latest"
+  "dockerImg": "jialianghuang/default-code-interpreter:latest",
+  "noPull": true
 }
