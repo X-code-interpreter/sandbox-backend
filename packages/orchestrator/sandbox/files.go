@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/KarpelesLab/reflink"
@@ -27,24 +29,48 @@ const (
 	cgroupParentName = "code-interpreter"
 )
 
-func init() {
-	_, err := os.Stat(constants.PrometheusTargetsPath)
+func createDirIfNotExist(path string, perm fs.FileMode) error {
+	_, err := os.Stat(path)
 	if err == nil {
-		return
+		// already exist
+		return nil
 	} else if !os.IsNotExist(err) {
-		errMsg := fmt.Errorf(
-			"stat prometheus target path (%s) failed: %w",
-			constants.PrometheusTargetsPath, err,
-		)
-		panic(errMsg)
+		return fmt.Errorf("stat for path (%s) failed: %w", path, err)
 	}
 	// not exist error
-	if err := os.Mkdir(constants.PrometheusTargetsPath, 0o777); err != nil {
-		errMsg := fmt.Errorf(
-			"create prometheus target path (%s) failed: %w",
-			constants.PrometheusTargetsPath, err,
-		)
-		panic(errMsg)
+	if err := os.Mkdir(path, perm); err != nil {
+		return fmt.Errorf("create dir (%s) with perm %O failed: %w", path, perm, err)
+	}
+	return nil
+}
+
+func init() {
+	// prometheus target path
+	if err := createDirIfNotExist(constants.PrometheusTargetsPath, 0o777); err != nil {
+		panic(err)
+	}
+
+	// parent cgroup path
+	cgroupParentPath := filepath.Join(cgroupfsPath, cgroupParentName)
+	if err := createDirIfNotExist(cgroupParentPath, 0o755); err != nil {
+		panic(err)
+	}
+	// enable all controllers in controllers into subtree_control
+	b, err := os.ReadFile(filepath.Join(cgroupParentPath, "cgroup.controllers"))
+	if err != nil {
+		panic(fmt.Errorf("read cgroup.controllers in %s failed: %w", cgroupParentPath, err))
+	}
+	controllers := strings.Fields(string(b))
+	for idx, c := range controllers {
+		controllers[idx] = "+" + c
+	}
+	f, err := os.OpenFile(filepath.Join(cgroupParentPath, "cgroup.subtree_control"), os.O_WRONLY, 0)
+	if err != nil {
+		panic(fmt.Errorf("open cgroup.subtree_control in %s failed: %w", cgroupParentPath, err))
+	}
+	enableRequest := strings.Join(controllers, " ")
+	if _, err := f.WriteString(enableRequest); err != nil {
+		panic(fmt.Errorf("write %s to cgroup.subtree_control in %s failed: %w", enableRequest, cgroupParentPath, err))
 	}
 }
 
@@ -159,7 +185,7 @@ func newSandboxFiles(
 		KernelMountDirPath:    kernelMountDir,
 		FirecrackerBinaryPath: firecrackerBinaryPath,
 		CgroupPath:            cgroupPath,
-		PrometheusTargetPath:   prometheusTargetPath,
+		PrometheusTargetPath:  prometheusTargetPath,
 	}, nil
 }
 
@@ -178,7 +204,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context) error {
 		return errMsg
 	}
 
-	err = os.MkdirAll(env.CgroupPath, 0o755)
+	err = os.Mkdir(env.CgroupPath, 0o755)
 	if err != nil {
 		errMsg := fmt.Errorf("error making cgroup: %w", err)
 		telemetry.ReportError(ctx, errMsg)

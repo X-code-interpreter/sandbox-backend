@@ -217,6 +217,7 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 
 	telemetry.ReportEvent(childCtx, "set fc drivers config")
 
+	// TODO(huang-jl): add network rate limit for each sandbox
 	ifaceID := consts.FcIfaceID
 	hostDevName := consts.FcTapName
 	networkConfig := operations.PutGuestNetworkInterfaceByIDParams{

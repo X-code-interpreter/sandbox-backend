@@ -14,13 +14,8 @@ ENV PIP_DEFAULT_TIMEOUT=100 \
   JUPYTER_CONFIG_PATH="/home/user/.jupyter" \
   IPYTHON_CONFIG_PATH="/home/user/.ipython"
 
-COPY ./requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-COPY ./monitor.py /root/monitor.py
-
 COPY ./ci-requirements.txt requirements.txt
-RUN pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
-  --no-cache-dir -r requirements.txt && \
+RUN pip install --no-cache-dir -r requirements.txt && \
   ipython kernel install --name "python3" --user
 
 COPY ./jupyter_server_config.py $JUPYTER_CONFIG_PATH/

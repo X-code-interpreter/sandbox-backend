@@ -8,9 +8,11 @@ declare -a BG_TASK_PID=()
 
 function start_docker_service() {
   pushd ${SCRIPT_PATH}
+  # -s means stop container before remove
+  # -f means do not confirm before remove
+  docker compose rm -s -f prometheus
   # clean previous data
-  docker compose down
-  if $(docker volume list | grep ci-prometheus-data); then
+  if docker volume list | grep "ci-prometheus-data" ; then
     echo "start remove prometheus volume..."
     docker volume rm ci-prometheus-data 
   fi
