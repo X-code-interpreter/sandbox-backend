@@ -29,6 +29,8 @@ type SandboxClient interface {
 	List(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*SandboxListResponse, error)
 	// Delete is a gRPC service that kills a sandbox.
 	Delete(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*empty.Empty, error)
+	// Invoke memory reclaim for a sandbox **on host**.
+	Deactive(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*empty.Empty, error)
 }
 
 type sandboxClient struct {
@@ -66,6 +68,15 @@ func (c *sandboxClient) Delete(ctx context.Context, in *SandboxRequest, opts ...
 	return out, nil
 }
 
+func (c *sandboxClient) Deactive(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
+	out := new(empty.Empty)
+	err := c.cc.Invoke(ctx, "/Sandbox/Deactive", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SandboxServer is the server API for Sandbox service.
 // All implementations must embed UnimplementedSandboxServer
 // for forward compatibility
@@ -76,6 +87,8 @@ type SandboxServer interface {
 	List(context.Context, *empty.Empty) (*SandboxListResponse, error)
 	// Delete is a gRPC service that kills a sandbox.
 	Delete(context.Context, *SandboxRequest) (*empty.Empty, error)
+	// Invoke memory reclaim for a sandbox **on host**.
+	Deactive(context.Context, *SandboxRequest) (*empty.Empty, error)
 	mustEmbedUnimplementedSandboxServer()
 }
 
@@ -91,6 +104,9 @@ func (UnimplementedSandboxServer) List(context.Context, *empty.Empty) (*SandboxL
 }
 func (UnimplementedSandboxServer) Delete(context.Context, *SandboxRequest) (*empty.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedSandboxServer) Deactive(context.Context, *SandboxRequest) (*empty.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Deactive not implemented")
 }
 func (UnimplementedSandboxServer) mustEmbedUnimplementedSandboxServer() {}
 
@@ -159,6 +175,24 @@ func _Sandbox_Delete_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Sandbox_Deactive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SandboxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServer).Deactive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/Sandbox/Deactive",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServer).Deactive(ctx, req.(*SandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Sandbox_ServiceDesc is the grpc.ServiceDesc for Sandbox service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -177,6 +211,10 @@ var Sandbox_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _Sandbox_Delete_Handler,
+		},
+		{
+			MethodName: "Deactive",
+			Handler:    _Sandbox_Deactive_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

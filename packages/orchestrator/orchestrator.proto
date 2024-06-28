@@ -23,6 +23,7 @@ message SandboxCreateRequest {
 
 // Data about the sandbox.
 message SandboxCreateResponse {
+  string privateIP = 1;
 }
 
 // Data required for action on a specified sandbox.
@@ -48,4 +49,7 @@ service Sandbox {
   rpc List(google.protobuf.Empty) returns (SandboxListResponse);
   // Delete is a gRPC service that kills a sandbox.
   rpc Delete(SandboxRequest) returns (google.protobuf.Empty);
+  // Invoke memory reclaim for a sandbox **on host**.
+  rpc Deactive(SandboxRequest) returns (google.protobuf.Empty);
+  // TODO(huang-jl): Active interface (which needs modification to FC)
 }

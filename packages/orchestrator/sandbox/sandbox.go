@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
@@ -27,17 +29,27 @@ var httpClient = http.Client{
 	Timeout: 5 * time.Second,
 }
 
+type SandboxState int
+
+const (
+	INVALID SandboxState = iota
+	RUNNING
+	KILLING
+)
+
 type Sandbox struct {
 	fc      *FcVM
 	env     *SandboxFiles
 	Config  *orchestrator.SandboxConfig
-	network *FcNetwork
+	Network *FcNetwork
 	StartAt time.Time
 
 	waitOnce  sync.Once
 	cleanOnce sync.Once
 	waitRes   error
 	cleanRes  error
+
+	State SandboxState
 }
 
 func NewSandbox(
@@ -147,13 +159,18 @@ func NewSandbox(
 		fc:      fc,
 		env:     fsEnv,
 		Config:  config,
-		network: fcNet,
+		Network: fcNet,
 		StartAt: time.Now(),
+		State:   RUNNING,
 	}
 
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
 	go func() {
-		bgCtx, span := tracer.Start(context.Background(), "new-sandbox-bg-task")
+		bgCtx, span := tracer.Start(context.Background(), "new-sandbox-bg-task",
+			trace.WithAttributes(
+				attribute.String("sandbox.id", instance.SandboxID()),
+			),
+		)
 		defer span.End()
 
 		clockErr := instance.EnsureClockSync(bgCtx)
@@ -193,7 +210,7 @@ syncLoop:
 }
 
 func (s *Sandbox) syncClock(ctx context.Context) error {
-	address := fmt.Sprintf("http://%s:%d/sync", s.network.HostClonedIP(), consts.DefaultEnvdServerPort)
+	address := fmt.Sprintf("http://%s:%d/sync", s.Network.HostClonedIP(), consts.DefaultEnvdServerPort)
 
 	request, err := http.NewRequestWithContext(ctx, "POST", address, nil)
 	if err != nil {
@@ -216,7 +233,7 @@ func (s *Sandbox) syncClock(ctx context.Context) error {
 }
 
 // Clean up the resource related to the sandbox (e.g., network, disk...).
-// can be called multiple times
+// can be called multiple times and will only take effect once.
 func (s *Sandbox) CleanupAfterFCStop(
 	ctx context.Context,
 	tracer trace.Tracer,
@@ -238,7 +255,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 
 	var finalErr error
 
-	err := s.network.Cleanup(childCtx, tracer, dns)
+	err := s.Network.Cleanup(childCtx, tracer, dns)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot remove network when destroying task: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -269,9 +286,10 @@ func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
 // wait for the cleanup has finished.
 //
 // This can be called multiple times.
-func (s *Sandbox) WaitAndCleanup(ctx context.Context, tracer trace.Tracer, dns *DNS) {
-	s.Wait()
-	s.CleanupAfterFCStop(ctx, tracer, dns)
+func (s *Sandbox) WaitAndCleanup(ctx context.Context, tracer trace.Tracer, dns *DNS) error {
+	waitErr := s.Wait()
+	cleanErr := s.CleanupAfterFCStop(ctx, tracer, dns)
+	return errors.Join(waitErr, cleanErr)
 }
 
 // Wait for the sandbox process has been exited, can be called
@@ -287,6 +305,16 @@ func (s *Sandbox) SandboxID() string {
 	return s.Config.SandboxID
 }
 
+// This will create a json file under sandbox's PrometheusTargetPath.
+// The purpose of this file is to inform prometheus the target and path
+// of this sandbox.
+//
+// Since the /metrics endpoint is inside the VM, so the prometheus needs to
+// access that endpoint through nginx proxy (which is a container of host network
+// mode) which is listened at port 6666.
+// And the proxy rules is append the sandbox id and the port inside VM, to the url.
+//
+// For more about this, you can refer to scripts/nginx.conf and packages/envd.
 func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer) error {
 	_, childSpan := tracer.Start(ctx, "setup-prometheus-target")
 	defer childSpan.End()
@@ -310,6 +338,38 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 	defer f.Close()
 	if err := json.NewEncoder(f).Encode(config); err != nil {
 		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
+	}
+	return nil
+}
+
+// The ctx already contains a span
+func (s *Sandbox) Deactive(ctx context.Context) error {
+	// TODO(huang-jl): use multigen lru (which requires Host Kernel version >= 6.1)
+	cgroupPath := s.env.CgroupPath
+	// Since (*os.File).Write method will handle EAGAIN internally
+	// so I choose to use syscall directly.
+	reclaimTrigger, err := syscall.Open(filepath.Join(cgroupPath, "memory.reclaim"), syscall.O_WRONLY, 0)
+	if err != nil {
+		errMsg := fmt.Errorf("open memory.reclaim for sandbox %s failed: %w", s.SandboxID(), err)
+		telemetry.ReportCriticalError(ctx, errMsg)
+		return errMsg
+	}
+	defer syscall.Close(reclaimTrigger)
+
+	telemetry.ReportEvent(ctx, "memory.reclaim file opened")
+	// TODO(huang-jl): how to reclaim suitable amount of memory?
+	// NOTE that kernel perfers integer, so do not use float here
+	// (e.g., use 1500M instead of 1.5G)
+	if _, err := syscall.Write(reclaimTrigger, []byte("1500M")); err != nil {
+		if err == syscall.EAGAIN {
+			telemetry.ReportEvent(ctx, "reclaim finished without reclaim enough memory")
+		} else {
+			errMsg := fmt.Errorf("write to memory.reclaim for sandbox %s failed: %w", s.SandboxID(), err)
+			telemetry.ReportCriticalError(ctx, errMsg)
+			return errMsg
+		}
+	} else {
+		telemetry.ReportEvent(ctx, "reclaim succeed")
 	}
 	return nil
 }

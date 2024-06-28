@@ -8,11 +8,13 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 
 	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -91,13 +93,18 @@ func (s *server) DelSandbox(sandboxID string) bool {
 }
 
 func (s *server) shutdown() {
-	ctx := context.Background()
+	ctx, span := s.tracer.Start(context.Background(), "server-shutdown")
+	defer span.End()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sbx := range s.sandboxes {
 		sbx.Stop(ctx, s.tracer)
 	}
 	for _, sbx := range s.sandboxes {
-		sbx.WaitAndCleanup(ctx, s.tracer, s.dns)
+		if err := sbx.WaitAndCleanup(ctx, s.tracer, s.dns); err != nil {
+			// record errors during cleanup
+			errMsg := fmt.Errorf("wait and cleanup for sandbox failed: %w", err)
+			telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sbx.SandboxID()))
+		}
 	}
 }
