@@ -296,7 +296,11 @@ func (fc *FcVM) stopVM(ctx context.Context, tracer trace.Tracer) error {
 	return nil
 }
 
+// This function must be called in order to recalim the
+// resouce related to firecracker (e.g., the process id)
 func (fc *FcVM) wait() error {
+	span := trace.SpanFromContext(fc.ctx)
+	defer span.End()
 	if fc.cmd == nil {
 		return fmt.Errorf("fc has not started")
 	}

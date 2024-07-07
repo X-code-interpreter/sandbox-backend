@@ -32,6 +32,7 @@ type server struct {
 	dns        *sandbox.DNS
 	netManager *sandbox.FcNetworkManager
 	tracer     trace.Tracer
+	metric     *serverMetric
 }
 
 // the second returned value is a cleanup function
@@ -54,11 +55,17 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 		return nil, nil, fmt.Errorf("new dns failed: %w", err)
 	}
 
+	metric, err := newServerMetric()
+	if err != nil {
+		return nil, nil, fmt.Errorf("new server metric failed: %w", err)
+	}
+
 	s := server{
 		dns:        dns,
 		sandboxes:  make(map[string]*sandbox.Sandbox),
 		netManager: sandbox.NewFcNetworkManager(),
 		tracer:     otel.Tracer(constants.ServiceName),
+		metric:     metric,
 	}
 
 	orchestrator.RegisterSandboxServer(grpcSrv, &s)

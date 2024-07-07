@@ -13,7 +13,8 @@ const (
 
 	DefaultKernelVersion = "5.10.186"
 
-	RootfsName   = "rootfs.ext4"
-	SnapfileName = "snapfile"
-	MemfileName  = "memfile"
+	RootfsName     = "rootfs.ext4"            // the base image
+	WritableFsName = "writetable-rootfs.ext4" // an empty writable image
+	SnapfileName   = "snapfile"
+	MemfileName    = "memfile"
 )

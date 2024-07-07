@@ -5,10 +5,9 @@ receivers:
         endpoint: 0.0.0.0:4317
 
 exporters:
-  # prometheus:
-  # endpoint: "0.0.0.0:8889"
-  # const_labels:
-  #   label1: value1
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    send_timestamps: true
 
   debug:
 
@@ -34,8 +33,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlp]
+      exporters: [otlp]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [prometheus]

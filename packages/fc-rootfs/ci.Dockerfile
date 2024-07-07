@@ -23,5 +23,5 @@ COPY ./jupyter_server_config.py $JUPYTER_CONFIG_PATH/
 RUN mkdir -p $IPYTHON_CONFIG_PATH/profile_default
 COPY ipython_kernel_config.py $IPYTHON_CONFIG_PATH/profile_default/
 
-COPY ./start-up.sh $JUPYTER_CONFIG_PATH/
-RUN chmod +x $JUPYTER_CONFIG_PATH/start-up.sh
+COPY ./start-up.sh ./start_up.py $JUPYTER_CONFIG_PATH/
+RUN chmod +x $JUPYTER_CONFIG_PATH/start-up.sh $JUPYTER_CONFIG_PATH/start_up.py 

@@ -154,16 +154,7 @@ func (s *Snapshot) startFcVM(
 	return nil
 }
 
-// 1. setup boot args (including ip=xxx)
-// 2. setup drivers (rootfs.ext4)
-// 3. setup network interface (tap device)
-// 4. setup mmds service (but we do not need populate any metadata for now)
-// 5. machine config (including vpu, mem)
-// 6. finally start vm
-func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error {
-	childCtx, childSpan := tracer.Start(ctx, "configure-fc-vm")
-	defer childSpan.End()
-
+func (s *Snapshot) configBootSource(ctx context.Context) error {
 	ip := fmt.Sprintf(
 		"%s::%s:%s:instance:eth0:off:8.8.8.8",
 		consts.FcAddr,
@@ -171,9 +162,11 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 		consts.FcMaskLong,
 	)
 	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
+  // TODO
+	// kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
 	kernelImagePath := s.env.KernelMountPath()
 	bootSourceConfig := operations.PutGuestBootSourceParams{
-		Context: childCtx,
+		Context: ctx,
 		Body: &models.BootSource{
 			BootArgs:        kernelArgs,
 			KernelImagePath: &kernelImagePath,
@@ -181,22 +174,18 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 	}
 
 	_, err := s.client.Operations.PutGuestBootSource(&bootSourceConfig)
-	if err != nil {
-		errMsg := fmt.Errorf("error setting fc boot source config: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	return err
+}
 
-		return errMsg
-	}
-
-	telemetry.ReportEvent(childCtx, "set fc boot source config")
-
+func (s *Snapshot) configBlkDrivers(ctx context.Context) error {
 	rootfs := "rootfs"
 	ioEngine := "Async"
 	isRootDevice := true
 	isReadOnly := false
 	pathOnHost := s.env.tmpRootfsPath()
+
 	driversConfig := operations.PutGuestDriveByIDParams{
-		Context: childCtx,
+		Context: ctx,
 		DriveID: rootfs,
 		Body: &models.Drive{
 			DriveID:      &rootfs,
@@ -207,21 +196,16 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 		},
 	}
 
-	_, err = s.client.Operations.PutGuestDriveByID(&driversConfig)
-	if err != nil {
-		errMsg := fmt.Errorf("error setting fc drivers config: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	_, err := s.client.Operations.PutGuestDriveByID(&driversConfig)
+	return err
+}
 
-		return errMsg
-	}
-
-	telemetry.ReportEvent(childCtx, "set fc drivers config")
-
+func (s *Snapshot) configNetIf(ctx context.Context) error {
 	// TODO(huang-jl): add network rate limit for each sandbox
 	ifaceID := consts.FcIfaceID
 	hostDevName := consts.FcTapName
 	networkConfig := operations.PutGuestNetworkInterfaceByIDParams{
-		Context: childCtx,
+		Context: ctx,
 		IfaceID: ifaceID,
 		Body: &models.NetworkInterface{
 			IfaceID:     &ifaceID,
@@ -230,18 +214,30 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 		},
 	}
 
-	_, err = s.client.Operations.PutGuestNetworkInterfaceByID(&networkConfig)
-	if err != nil {
-		errMsg := fmt.Errorf("error setting fc network config: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	_, err := s.client.Operations.PutGuestNetworkInterfaceByID(&networkConfig)
+	return err
+}
 
-		return errMsg
+func (s *Snapshot) configMMDS(ctx context.Context) error {
+	mmdsVersion := "V2"
+	mmdsConfig := operations.PutMmdsConfigParams{
+		Context: ctx,
+		Body: &models.MmdsConfig{
+			Version:           &mmdsVersion,
+			NetworkInterfaces: []string{consts.FcIfaceID},
+		},
 	}
 
-	telemetry.ReportEvent(childCtx, "set fc network config")
+	_, err := s.client.Operations.PutMmdsConfig(&mmdsConfig)
+	return err
+}
 
+func (s *Snapshot) configMachine(ctx context.Context) error {
 	smt := true
-	trackDirtyPages := false
+	// NOTE(by huang-jl): when generate snapshot, we track dirty pages
+	// this will enables to create a Diff memory snapshot (with less disk
+	// storage overhead).
+	trackDirtyPages := true
 
 	machineConfig := &models.MachineConfiguration{
 		VcpuCount:       &s.env.VCpuCount,
@@ -255,42 +251,67 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 	}
 
 	machineConfigParams := operations.PutMachineConfigurationParams{
-		Context: childCtx,
+		Context: ctx,
 		Body:    machineConfig,
 	}
 
-	_, err = s.client.Operations.PutMachineConfiguration(&machineConfigParams)
-	if err != nil {
+	_, err := s.client.Operations.PutMachineConfiguration(&machineConfigParams)
+	return err
+}
+
+// 1. setup boot args (including ip=xxx)
+// 2. setup drivers (rootfs.ext4)
+// 3. setup network interface (tap device)
+// 4. setup mmds service (but we do not need populate any metadata for now)
+// 5. machine config (including vpu, mem)
+// 6. finally start vm
+func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "configure-fc-vm")
+	defer childSpan.End()
+
+	if err := s.configBootSource(childCtx); err != nil {
+		errMsg := fmt.Errorf("error setting fc boot source config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "set fc boot source config")
+
+	if err := s.configBlkDrivers(childCtx); err != nil {
+		errMsg := fmt.Errorf("error setting fc drivers config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "set fc drivers config")
+
+	if err := s.configNetIf(childCtx); err != nil {
+		errMsg := fmt.Errorf("error setting fc network config: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "set fc network config")
+
+	if err := s.configMachine(childCtx); err != nil {
 		errMsg := fmt.Errorf("error setting fc machine config: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
-
 	telemetry.ReportEvent(childCtx, "set fc machine config")
 
-	mmdsVersion := "V2"
-	mmdsConfig := operations.PutMmdsConfigParams{
-		Context: childCtx,
-		Body: &models.MmdsConfig{
-			Version:           &mmdsVersion,
-			NetworkInterfaces: []string{consts.FcIfaceID},
-		},
-	}
-
-	_, err = s.client.Operations.PutMmdsConfig(&mmdsConfig)
-	if err != nil {
+	if err := s.configMMDS(childCtx); err != nil {
 		errMsg := fmt.Errorf("error setting fc mmds config: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
-
 	telemetry.ReportEvent(childCtx, "set fc mmds config")
 
 	// We may need to sleep before start - previous configuration is processes asynchronously. How to do this sync or in one go?
 	time.Sleep(waitTimeForFCConfig)
 
+	// start fc
 	start := models.InstanceActionInfoActionTypeInstanceStart
 	startActionParams := operations.CreateSyncActionParams{
 		Context: childCtx,
@@ -299,14 +320,12 @@ func (s *Snapshot) configureFcVM(ctx context.Context, tracer trace.Tracer) error
 		},
 	}
 
-	_, err = s.client.Operations.CreateSyncAction(&startActionParams)
-	if err != nil {
+	if _, err := s.client.Operations.CreateSyncAction(&startActionParams); err != nil {
 		errMsg := fmt.Errorf("error starting fc: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
-
 	telemetry.ReportEvent(childCtx, "started fc")
 
 	return nil
@@ -370,7 +389,11 @@ func (s *Snapshot) createSnapshot(ctx context.Context, tracer trace.Tracer) erro
 		Body: &models.SnapshotCreateParams{
 			MemFilePath:  &memfilePath,
 			SnapshotPath: &snapfileName,
-			SnapshotType: models.SnapshotCreateParamsSnapshotTypeFull,
+			// SnapshotType: models.SnapshotCreateParamsSnapshotTypeFull,
+			// NOTE(by huang-jl): here we generate a Diff memory snapshot
+			// the memfile will only contains the written pages (i.e., it
+			// generate a sparse file).
+			SnapshotType: models.SnapshotCreateParamsSnapshotTypeDiff,
 		},
 	}
 

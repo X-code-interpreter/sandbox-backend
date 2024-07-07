@@ -91,6 +91,11 @@ func (e *Env) tmpRootfsPath() string {
 	return filepath.Join(e.tmpRunningPath(), consts.RootfsName)
 }
 
+// The running directory where save the rootfs
+func (e *Env) tmpWritableRootfsPath() string {
+	return filepath.Join(e.tmpRunningPath(), consts.WritableFsName)
+}
+
 func (e *Env) tmpMemfilePath() string {
 	return filepath.Join(e.tmpRunningPath(), consts.MemfileName)
 }

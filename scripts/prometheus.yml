@@ -18,6 +18,11 @@ scrape_configs:
   #   # scheme defaults to 'http'.
   #   static_configs:
   #     - targets: ["localhost:9090"]
+  - job_name: "otel-collector"
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['otel-collector:8889']  # the metrics exported by prometheus exporter
+      - targets: ['otel-collector:8888']  # the metrics of otel-collector itself
   - job_name: "firecracker"
     scrape_interval: 1s
     file_sd_configs:

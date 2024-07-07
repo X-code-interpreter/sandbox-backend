@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
+	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/constants"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -27,9 +29,13 @@ import (
 const (
 	ToMBShift = 20
 	// Max size of the rootfs file in MB.
-	maxRootfsSize = 15000 << ToMBShift
-	cacheTimeout  = "48h"
+	maxRootfsSize   = 15000 << ToMBShift
+	cacheTimeout    = "48h"
+	overlayInitPath = "./overlay-init"
 )
+
+//go:embed overlay-init
+var overlayInitContent []byte
 
 type Rootfs struct {
 	docker *client.Client
@@ -137,14 +143,24 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	telemetry.ReportEvent(childCtx, "executed provision script env")
 
+	overlayInitTmp, err := os.CreateTemp("", "overlay-init")
 	if err != nil {
-		errMsg := fmt.Errorf("error generating network name: %w", err)
+		errMsg := fmt.Errorf("error create temp file for overlay-init: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
+	if _, err := overlayInitTmp.Write(overlayInitContent); err != nil {
+		errMsg := fmt.Errorf("error write overlay-init temp file: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
 
-	telemetry.ReportEvent(childCtx, "created network")
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "overlay-init temp file created")
+	defer func() {
+		overlayInitTmp.Close()
+		os.Remove(overlayInitTmp.Name())
+	}()
 
 	pidsLimit := int64(200)
 
@@ -236,6 +252,10 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		{
 			localPath: consts.HostEnvdPath,
 			tarPath:   consts.GuestEnvdPath,
+		},
+		{
+			localPath: overlayInitTmp.Name(),
+			tarPath:   constants.OverlayInitPath,
 		},
 	}
 	pr, pw := io.Pipe()
@@ -425,7 +445,27 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	telemetry.ReportEvent(childCtx, "converted container tar to ext4")
 
-	tuneContext, tuneSpan := tracer.Start(childCtx, "tune-rootfs-file-cmd")
+	if err = r.makeRootfsWritable(childCtx, tracer); err != nil {
+		errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "made rootfs file writable")
+
+	if err = r.resizeRootfs(childCtx, tracer, rootfsFile); err != nil {
+		errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "resized rootfs file")
+
+	return nil
+}
+
+func (r *Rootfs) makeRootfsWritable(ctx context.Context, tracer trace.Tracer) error {
+	tuneContext, tuneSpan := tracer.Start(ctx, "tune-rootfs-file-cmd")
 	defer tuneSpan.End()
 
 	cmd := exec.CommandContext(tuneContext, "tune2fs", "-O ^read-only", r.env.tmpRootfsPath())
@@ -433,28 +473,27 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	tuneStdoutWriter := telemetry.NewEventWriter(tuneContext, "stdout")
 	cmd.Stdout = tuneStdoutWriter
 
-	tuneStderrWriter := telemetry.NewEventWriter(childCtx, "stderr")
+	tuneStderrWriter := telemetry.NewEventWriter(tuneContext, "stderr")
 	cmd.Stderr = tuneStderrWriter
 
-	err = cmd.Run()
-	if err != nil {
-		errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	return cmd.Run()
+}
 
-		return errMsg
-	}
-
-	telemetry.ReportEvent(childCtx, "made rootfs file writable")
+// 1. use truncate to enlarge the rootfs ext4 image
+// 2. use resize2fs to make the ext4 image recognize the previous truncate
+func (r *Rootfs) resizeRootfs(ctx context.Context, tracer trace.Tracer, rootfsFile *os.File) error {
+	resizeContext, resizeSpan := tracer.Start(ctx, "resize-rootfs-file-cmd")
+	defer resizeSpan.End()
 
 	rootfsStats, err := rootfsFile.Stat()
 	if err != nil {
 		errMsg := fmt.Errorf("error statting rootfs file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+		telemetry.ReportCriticalError(resizeContext, errMsg)
 
 		return errMsg
 	}
 
-	telemetry.ReportEvent(childCtx, "statted rootfs file")
+	telemetry.ReportEvent(resizeContext, "statted rootfs file")
 
 	// In bytes
 	rootfsSize := rootfsStats.Size() + r.env.DiskSizeMB<<ToMBShift
@@ -464,17 +503,14 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	err = rootfsFile.Truncate(rootfsSize)
 	if err != nil {
 		errMsg := fmt.Errorf("error truncating rootfs file: %w to size of build + defaultDiskSizeMB", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+		telemetry.ReportCriticalError(resizeContext, errMsg)
 
 		return errMsg
 	}
 
-	telemetry.ReportEvent(childCtx, "truncated rootfs file to size of build + defaultDiskSizeMB")
+	telemetry.ReportEvent(resizeContext, "truncated rootfs file to size of build + defaultDiskSizeMB")
 
-	resizeContext, resizeSpan := tracer.Start(childCtx, "resize-rootfs-file-cmd")
-	defer resizeSpan.End()
-
-	cmd = exec.CommandContext(resizeContext, "resize2fs", r.env.tmpRootfsPath())
+	cmd := exec.CommandContext(resizeContext, "resize2fs", r.env.tmpRootfsPath())
 
 	resizeStdoutWriter := telemetry.NewEventWriter(resizeContext, "stdout")
 	cmd.Stdout = resizeStdoutWriter
@@ -482,15 +518,5 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	resizeStderrWriter := telemetry.NewEventWriter(resizeContext, "stderr")
 	cmd.Stderr = resizeStderrWriter
 
-	err = cmd.Run()
-	if err != nil {
-		errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
-	}
-
-	telemetry.ReportEvent(childCtx, "resized rootfs file")
-
-	return nil
+	return cmd.Run()
 }

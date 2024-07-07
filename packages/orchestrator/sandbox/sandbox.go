@@ -8,9 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
@@ -166,7 +164,9 @@ func NewSandbox(
 
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
 	go func() {
-		bgCtx, span := tracer.Start(context.Background(), "new-sandbox-bg-task",
+		bgCtx, span := tracer.Start(
+			trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(childCtx)),
+			"new-sandbox-bg-task",
 			trace.WithAttributes(
 				attribute.String("sandbox.id", instance.SandboxID()),
 			),
@@ -338,38 +338,6 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 	defer f.Close()
 	if err := json.NewEncoder(f).Encode(config); err != nil {
 		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
-	}
-	return nil
-}
-
-// The ctx already contains a span
-func (s *Sandbox) Deactive(ctx context.Context) error {
-	// TODO(huang-jl): use multigen lru (which requires Host Kernel version >= 6.1)
-	cgroupPath := s.env.CgroupPath
-	// Since (*os.File).Write method will handle EAGAIN internally
-	// so I choose to use syscall directly.
-	reclaimTrigger, err := syscall.Open(filepath.Join(cgroupPath, "memory.reclaim"), syscall.O_WRONLY, 0)
-	if err != nil {
-		errMsg := fmt.Errorf("open memory.reclaim for sandbox %s failed: %w", s.SandboxID(), err)
-		telemetry.ReportCriticalError(ctx, errMsg)
-		return errMsg
-	}
-	defer syscall.Close(reclaimTrigger)
-
-	telemetry.ReportEvent(ctx, "memory.reclaim file opened")
-	// TODO(huang-jl): how to reclaim suitable amount of memory?
-	// NOTE that kernel perfers integer, so do not use float here
-	// (e.g., use 1500M instead of 1.5G)
-	if _, err := syscall.Write(reclaimTrigger, []byte("1500M")); err != nil {
-		if err == syscall.EAGAIN {
-			telemetry.ReportEvent(ctx, "reclaim finished without reclaim enough memory")
-		} else {
-			errMsg := fmt.Errorf("write to memory.reclaim for sandbox %s failed: %w", s.SandboxID(), err)
-			telemetry.ReportCriticalError(ctx, errMsg)
-			return errMsg
-		}
-	} else {
-		telemetry.ReportEvent(ctx, "reclaim succeed")
 	}
 	return nil
 }
