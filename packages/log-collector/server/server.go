@@ -13,10 +13,10 @@ import (
 )
 
 type LogMeta struct {
-	TraceID    string `json:"traceID"`
-	InstanceID string `json:"instanceID"`
-	EnvID      string `json:"envID"`
-	TeamID     string `json:"teamID"`
+	TraceID   string `json:"traceID"`
+	SandboxID string `json:"sandboxID"`
+	EnvID     string `json:"envID"`
+	TeamID    string `json:"teamID"`
 }
 
 // make sure log dir already exists
@@ -59,7 +59,7 @@ func EnvdLogHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file, err := os.OpenFile(
-		filepath.Join(consts.LogDiskDir, meta.InstanceID+".log"),
+		filepath.Join(consts.LogDiskDir, meta.SandboxID+".log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
 		0644,
 	)
@@ -72,19 +72,19 @@ func EnvdLogHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	if _, err = file.Write(body); err != nil {
 		errMsg := fmt.Errorf("error write log file: %w", err)
-		zap.L().Error("", zap.Error(errMsg), zap.String("instance-id", meta.InstanceID))
+		zap.L().Error("", zap.Error(errMsg), zap.String("sandbox-id", meta.SandboxID))
 		http.Error(w, errMsg.Error(), http.StatusBadRequest)
 		return
 	}
 	// write a line break
 	if _, err = fmt.Fprint(file, "\n"); err != nil {
 		errMsg := fmt.Errorf("error write log file: %w", err)
-		zap.L().Error("", zap.Error(errMsg), zap.String("instance-id", meta.InstanceID))
+		zap.L().Error("", zap.Error(errMsg), zap.String("sandbox-id", meta.SandboxID))
 		http.Error(w, errMsg.Error(), http.StatusBadRequest)
 		return
 	}
 	zap.L().Info("save the log succeed!",
-		zap.String("instance-id", meta.InstanceID),
+		zap.String("sandbox-id", meta.SandboxID),
 		zap.Int("size", len(body)),
 	)
 	w.WriteHeader(http.StatusOK)

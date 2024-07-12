@@ -307,16 +307,6 @@ func (n *FcNetwork) Setup(ctx context.Context, tracer trace.Tracer, dns *DNS) er
 	}
 	telemetry.ReportEvent(childCtx, "Set ns to host ns")
 
-	// TODO(huang-jl): no need to search link by name
-	// vethInHost, err := netlink.LinkByName(n.VethName())
-	// if err != nil {
-	// 	errMsg := fmt.Errorf("error finding veth: %w", err)
-	// 	telemetry.ReportCriticalError(childCtx, errMsg)
-
-	// 	return errMsg
-	// }
-	// telemetry.ReportEvent(childCtx, "Found veth")
-
 	err = netlink.LinkSetUp(veth)
 	if err != nil {
 		errMsg := fmt.Errorf("error setting veth device up: %w", err)

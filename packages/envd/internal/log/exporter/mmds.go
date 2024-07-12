@@ -15,11 +15,11 @@ const (
 )
 
 type opts struct {
-	TraceID    string `json:"traceID"`
-	InstanceID string `json:"instanceID"`
-	EnvID      string `json:"envID"`
-	Address    string `json:"address"`
-	TeamID     string `json:"teamID"`
+	TraceID   string `json:"traceID"`
+	SandboxID string `json:"sandboxID"`
+	EnvID     string `json:"envID"`
+	Address   string `json:"address"`
+	TeamID    string `json:"teamID"`
 }
 
 func (opts *opts) addOptsToJSON(jsonLogs []byte) ([]byte, error) {
@@ -30,7 +30,7 @@ func (opts *opts) addOptsToJSON(jsonLogs []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	parsed["instanceID"] = opts.InstanceID
+	parsed["sandboxID"] = opts.SandboxID
 	parsed["envID"] = opts.EnvID
 	parsed["traceID"] = opts.TraceID
 	parsed["teamID"] = opts.TeamID
@@ -104,8 +104,8 @@ func (w *HTTPLogsExporter) getMMDSOpts(token string) (*opts, error) {
 		return nil, fmt.Errorf("no 'envID' in mmds opts")
 	}
 
-	if opts.InstanceID == "" {
-		return nil, fmt.Errorf("no 'instanceID' in mmds opts")
+	if opts.SandboxID == "" {
+		return nil, fmt.Errorf("no 'sandboxID' in mmds opts")
 	}
 
 	return &opts, nil

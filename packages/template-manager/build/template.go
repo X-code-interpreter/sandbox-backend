@@ -74,6 +74,10 @@ func (e *Env) envRootfsPath() string {
 	return filepath.Join(e.envDirPath(), consts.RootfsName)
 }
 
+func (e *Env) envWritableRootfsPath() string {
+	return filepath.Join(e.envDirPath(), consts.WritableFsName)
+}
+
 func (e *Env) envMemfilePath() string {
 	return filepath.Join(e.envDirPath(), consts.MemfileName)
 }
@@ -102,10 +106,6 @@ func (e *Env) tmpMemfilePath() string {
 
 func (e *Env) tmpSnapfilePath() string {
 	return filepath.Join(e.tmpRunningPath(), consts.SnapfileName)
-}
-
-func (e *Env) tmpInstanceID() string {
-	return fmt.Sprintf("ci-build-%s", e.EnvID)
 }
 
 // The dir on the host where should keep the kernel vmlinux
@@ -187,6 +187,16 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 	}
 
 	telemetry.ReportEvent(childCtx, "moved rootfs")
+
+	err = os.Rename(e.tmpWritableRootfsPath(), e.envWritableRootfsPath())
+	if err != nil {
+		errMsg := fmt.Errorf("error moving writable rootfs: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "moved writable rootfs")
 	return nil
 }
 

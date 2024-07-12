@@ -14,6 +14,7 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
+	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/constants"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -161,9 +162,8 @@ func (s *Snapshot) configBootSource(ctx context.Context) error {
 		consts.FcTapAddress,
 		consts.FcMaskLong,
 	)
-	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
-  // TODO
-	// kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
+	// kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
+	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
 	kernelImagePath := s.env.KernelMountPath()
 	bootSourceConfig := operations.PutGuestBootSourceParams{
 		Context: ctx,
@@ -178,17 +178,39 @@ func (s *Snapshot) configBootSource(ctx context.Context) error {
 }
 
 func (s *Snapshot) configBlkDrivers(ctx context.Context) error {
-	rootfs := "rootfs"
+	driverId := "rootfs"
 	ioEngine := "Async"
-	isRootDevice := true
-	isReadOnly := false
-	pathOnHost := s.env.tmpRootfsPath()
 
+	// first prepare the base rootfs
+	isRootDevice := true
+	isReadOnly := true
+	pathOnHost := s.env.tmpRootfsPath()
 	driversConfig := operations.PutGuestDriveByIDParams{
 		Context: ctx,
-		DriveID: rootfs,
+		DriveID: driverId,
 		Body: &models.Drive{
-			DriveID:      &rootfs,
+			DriveID:      &driverId,
+			PathOnHost:   pathOnHost,
+			IsRootDevice: &isRootDevice,
+			IsReadOnly:   isReadOnly,
+			IoEngine:     &ioEngine,
+		},
+	}
+
+	if _, err := s.client.Operations.PutGuestDriveByID(&driversConfig); err != nil {
+		return err
+	}
+
+	// second prepare the writable rootfs
+	driverId = "writablefs"
+	pathOnHost = s.env.tmpWritableRootfsPath()
+	isReadOnly = false
+	isRootDevice = false
+	driversConfig = operations.PutGuestDriveByIDParams{
+		Context: ctx,
+		DriveID: driverId,
+		Body: &models.Drive{
+			DriveID:      &driverId,
 			PathOnHost:   pathOnHost,
 			IsRootDevice: &isRootDevice,
 			IsReadOnly:   isReadOnly,

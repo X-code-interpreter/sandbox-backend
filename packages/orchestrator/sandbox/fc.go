@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"syscall"
 
@@ -34,11 +33,11 @@ type FcVM struct {
 // The envd will use these information for logging
 // for more check the envd/internal/log/exporter/mmds.go
 type MmdsMetadata struct {
-	InstanceID string `json:"instanceID"`
-	EnvID      string `json:"envID"`
-	Address    string `json:"address"`
-	TraceID    string `json:"traceID,omitempty"`
-	TeamID     string `json:"teamID,omitempty"`
+	SandboxID string `json:"sandboxID"`
+	EnvID     string `json:"envID"`
+	Address   string `json:"address"`
+	TraceID   string `json:"traceID,omitempty"`
+	TeamID    string `json:"teamID,omitempty"`
 }
 
 func newFCVM(
@@ -47,6 +46,7 @@ func newFCVM(
 	sandboxID string,
 	env *SandboxFiles,
 	fcNet *FcNetwork,
+	traceID string,
 ) (*FcVM, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-fc-vm")
 	defer childSpan.End()
@@ -86,7 +86,8 @@ func newFCVM(
 		"-c",
 		rootfsMountCmd+kernelMountCmd+inNetNSCmd+fcCmd,
 	)
-	cgroupFd, err := os.Open(env.CgroupPath)
+	// NOTE(huang-jl): do not forget to close this fd
+	cgroupFd, err := syscall.Open(env.CgroupPath, syscall.O_RDONLY, 0)
 	if err != nil {
 		errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -94,7 +95,7 @@ func newFCVM(
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:      true,
-		CgroupFD:    int(cgroupFd.Fd()),
+		CgroupFD:    cgroupFd,
 		UseCgroupFD: true,
 	}
 	cmdStdoutReader, cmdStdoutWriter := io.Pipe()
@@ -113,9 +114,10 @@ func newFCVM(
 		id:     sandboxID,
 		env:    env,
 		metadata: &MmdsMetadata{
-			InstanceID: sandboxID,
-			EnvID:      env.EnvID,
-			Address:    logCollectorAddr,
+			SandboxID: sandboxID,
+			EnvID:     env.EnvID,
+			Address:   logCollectorAddr,
+			TraceID:   traceID,
 		},
 	}
 
@@ -202,10 +204,18 @@ func (fc *FcVM) startVM(
 	go fc.redirectStderr()
 	go fc.redirectStdout()
 
+	cgroupFd := fc.cmd.SysProcAttr.CgroupFD
+	defer func() {
+		if err := syscall.Close(cgroupFd); err != nil {
+			errMsg := fmt.Errorf("close cgroup fd failed: %w", err)
+			telemetry.ReportError(childCtx, errMsg)
+		}
+	}()
+
 	err := fc.cmd.Start()
 	if err != nil {
 		errMsg := fmt.Errorf("start vm failed: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
+		telemetry.ReportCriticalError(childCtx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(childCtx, "vm started")
@@ -213,7 +223,7 @@ func (fc *FcVM) startVM(
 	err = client.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("wait for fc socket failed: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
+		telemetry.ReportCriticalError(childCtx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(childCtx, "fc process created socket")
@@ -248,8 +258,8 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 
 	fcClient := client.NewFirecrackerAPI(fc.env.SocketPath)
 	telemetry.ReportEvent(childCtx, "created FC socket client")
-	snapshotLoadParams := fc.env.getSnapshotLoadParams()
 
+	snapshotLoadParams := fc.env.getSnapshotLoadParams()
 	snapshotConfig := operations.LoadSnapshotParams{
 		Context: childCtx,
 		Body:    &snapshotLoadParams,
@@ -299,6 +309,7 @@ func (fc *FcVM) stopVM(ctx context.Context, tracer trace.Tracer) error {
 // This function must be called in order to recalim the
 // resouce related to firecracker (e.g., the process id)
 func (fc *FcVM) wait() error {
+	// close the vmm span
 	span := trace.SpanFromContext(fc.ctx)
 	defer span.End()
 	if fc.cmd == nil {

@@ -24,6 +24,10 @@ pivot() {
 	-o noatime,lowerdir=/,upperdir=${rw_root},workdir=${work_dir} \
 	-t overlay "overlayfs:${rw_root}" /mnt
     pivot_root /mnt /mnt/rom
+
+    # umount the old rootfs and the ext4 fs
+    # only expose the new overlay rootfs
+    umount /rom/overlay && umount /rom
 }
 
 # Overlay is configured under /overlay
@@ -59,7 +63,7 @@ do_overlay
 
 # firecracker-containerd itself doesn't need /volumes but volume package
 # uses that to share files between in-VM snapshotters.
-mkdir /volumes
+# mkdir /volumes
 
 # invoke the actual system init program and procede with the boot
 # process.

@@ -68,14 +68,17 @@ func init() {
 	if err != nil {
 		panic(fmt.Errorf("open cgroup.subtree_control in %s failed: %w", cgroupParentPath, err))
 	}
+	defer f.Close()
 	enableRequest := strings.Join(controllers, " ")
 	if _, err := f.WriteString(enableRequest); err != nil {
 		panic(fmt.Errorf("write %s to cgroup.subtree_control in %s failed: %w", enableRequest, cgroupParentPath, err))
 	}
 }
 
+// Represent a files related to a sandbox
 type SandboxFiles struct {
-	EnvID string
+	EnvID     string
+	SandboxID string
 	// EnvPath (a dir) contains the rootfs files in env build (see template manager)
 	EnvPath string
 	// Different instance of same Env need has its own dir
@@ -129,43 +132,35 @@ func waitForSocket(socketPath string, timeout time.Duration) error {
 
 func newSandboxFiles(
 	ctx context.Context,
-	tracer trace.Tracer,
-	instanceID,
+	sandboxID,
 	envID,
 	kernelVersion,
 	kernelsDir,
 	kernelMountDir,
 	firecrackerBinaryPath string,
 ) (*SandboxFiles, error) {
-	childCtx, childSpan := tracer.Start(ctx, "create-env-instance",
-		trace.WithAttributes(
-			attribute.String("env.id", envID),
-			attribute.String("instanceId", instanceID),
-		),
-	)
-	defer childSpan.End()
-
 	envPath := filepath.Join(consts.EnvsDisk, envID)
-	envInstancePath := filepath.Join(envPath, EnvInstancesDirName, instanceID)
+	span := trace.SpanFromContext(ctx)
+	envInstancePath := filepath.Join(envPath, EnvInstancesDirName, sandboxID)
 	// to match with the template manager tmpRunningPath()
 	runningPath := filepath.Join(envPath, "run")
 
 	// Assemble socket path
-	socketPath, sockErr := getSocketPath(instanceID)
+	socketPath, sockErr := getSocketPath(sandboxID)
 	if sockErr != nil {
 		errMsg := fmt.Errorf("error getting socket path: %w", sockErr)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return nil, errMsg
 	}
 
 	// Create kernel path
 	kernelPath := filepath.Join(kernelsDir, kernelVersion)
 
-	cgroupPath := filepath.Join(cgroupfsPath, cgroupParentName, instanceID)
+	cgroupPath := filepath.Join(cgroupfsPath, cgroupParentName, sandboxID)
 
-	prometheusTargetPath := filepath.Join(constants.PrometheusTargetsPath, instanceID+".json")
+	prometheusTargetPath := filepath.Join(constants.PrometheusTargetsPath, sandboxID+".json")
 
-	childSpan.SetAttributes(
+	span.SetAttributes(
 		attribute.String("instance.env_instance_path", envInstancePath),
 		attribute.String("instance.running_path", runningPath),
 		attribute.String("instance.env_path", envPath),
@@ -177,6 +172,7 @@ func newSandboxFiles(
 
 	return &SandboxFiles{
 		EnvID:                 envID,
+		SandboxID:             sandboxID,
 		EnvInstancePath:       envInstancePath,
 		EnvPath:               envPath,
 		RunningPath:           runningPath,
@@ -189,40 +185,67 @@ func newSandboxFiles(
 	}, nil
 }
 
-func (env *SandboxFiles) Ensure(ctx context.Context) error {
+func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "create-sandbox-files",
+		trace.WithAttributes(
+			attribute.String("env.id", env.EnvID),
+			attribute.String("sandbox.id", env.SandboxID),
+		),
+	)
+	defer childSpan.End()
 	err := os.MkdirAll(env.EnvInstancePath, 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error making env instance dir: %w", err)
-		telemetry.ReportError(ctx, errMsg)
+		telemetry.ReportError(childCtx, errMsg)
 		return errMsg
 	}
+
+	telemetry.ReportEvent(childCtx, "env instance directory created")
 
 	err = os.MkdirAll(env.RunningPath, 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error making env running dir: %w", err)
-		telemetry.ReportError(ctx, errMsg)
+		telemetry.ReportError(childCtx, errMsg)
 		return errMsg
 	}
+
+	telemetry.ReportEvent(childCtx, "sandbox running directory created")
 
 	err = os.Mkdir(env.CgroupPath, 0o755)
 	if err != nil {
 		errMsg := fmt.Errorf("error making cgroup: %w", err)
-		telemetry.ReportError(ctx, errMsg)
+		telemetry.ReportError(childCtx, errMsg)
 		return errMsg
 	}
+
+	telemetry.ReportEvent(childCtx, "sandbox cgroup created")
 
 	// NOTE(huang-jl): ext4 does not support reflink
 	// so we need to use xfs
 	err = reflink.Always(
+		filepath.Join(env.EnvPath, consts.WritableFsName),
+		filepath.Join(env.EnvInstancePath, consts.WritableFsName),
+	)
+	if err != nil {
+		errMsg := fmt.Errorf("error creating writable reflinked rootfs: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(childCtx, "reflink of writable image created")
+
+	// build a hard link to base rootfs
+	err = os.Link(
 		filepath.Join(env.EnvPath, consts.RootfsName),
 		filepath.Join(env.EnvInstancePath, consts.RootfsName),
 	)
 	if err != nil {
-		errMsg := fmt.Errorf("error creating reflinked rootfs: %w", err)
-		telemetry.ReportCriticalError(ctx, errMsg)
+		errMsg := fmt.Errorf("error linking base rootfs: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
+	telemetry.ReportEvent(childCtx, "hard-link of base image created")
 
 	return nil
 }

@@ -23,6 +23,8 @@ const (
 	waitSocketTimeout = 2 * time.Second
 )
 
+// Default MaxIdleConns is 100.
+// Default IdleConnTimeout  is 90 seconds.
 var httpClient = http.Client{
 	Timeout: 5 * time.Second,
 }
@@ -60,7 +62,7 @@ func NewSandbox(
 	childCtx, childSpan := tracer.Start(
 		ctx,
 		"new-sandbox",
-		trace.WithAttributes(attribute.String("instance.id", config.SandboxID)),
+		trace.WithAttributes(attribute.String("sandbox.id", config.SandboxID)),
 	)
 	defer childSpan.End()
 
@@ -76,7 +78,7 @@ func NewSandbox(
 		if err != nil {
 			ntErr := fcNet.Cleanup(childCtx, tracer, dns)
 			if ntErr != nil {
-				errMsg := fmt.Errorf("error removing network namespace after failed instance start: %w", ntErr)
+				errMsg := fmt.Errorf("error removing network namespace after failed sandbox start: %w", ntErr)
 				telemetry.ReportError(childCtx, errMsg)
 			} else {
 				telemetry.ReportEvent(childCtx, "removed network namespace")
@@ -93,7 +95,6 @@ func NewSandbox(
 
 	fsEnv, err := newSandboxFiles(
 		childCtx,
-		tracer,
 		config.SandboxID,
 		config.TemplateID,
 		config.KernelVersion,
@@ -107,18 +108,15 @@ func NewSandbox(
 
 		return nil, errMsg
 	}
-
 	telemetry.ReportEvent(childCtx, "assembled env files info")
 
-	err = fsEnv.Ensure(childCtx)
+	err = fsEnv.Ensure(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create env for FC: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return nil, errMsg
 	}
-
-	telemetry.ReportEvent(childCtx, "created env for FC")
 
 	defer func() {
 		if err != nil {
@@ -138,6 +136,7 @@ func NewSandbox(
 		config.SandboxID,
 		fsEnv,
 		fcNet,
+		childSpan.SpanContext().TraceID().String(),
 	)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to new fc vm: %w", err)
@@ -153,7 +152,7 @@ func NewSandbox(
 		return nil, errMsg
 	}
 
-	instance := &Sandbox{
+	sbx := &Sandbox{
 		fc:      fc,
 		env:     fsEnv,
 		Config:  config,
@@ -168,25 +167,25 @@ func NewSandbox(
 			trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(childCtx)),
 			"new-sandbox-bg-task",
 			trace.WithAttributes(
-				attribute.String("sandbox.id", instance.SandboxID()),
+				attribute.String("sandbox.id", sbx.SandboxID()),
 			),
 		)
 		defer span.End()
 
-		clockErr := instance.EnsureClockSync(bgCtx)
+		clockErr := sbx.EnsureClockSync(bgCtx)
 		if clockErr != nil {
 			telemetry.ReportError(bgCtx, fmt.Errorf("failed to sync clock: %w", clockErr))
 		} else {
 			telemetry.ReportEvent(bgCtx, "clock synced")
 		}
-		if err := instance.setupPrometheusTarget(bgCtx, tracer); err != nil {
+		if err := sbx.setupPrometheusTarget(bgCtx, tracer); err != nil {
 			telemetry.ReportError(bgCtx, fmt.Errorf("failed to setup prometheus target: %w", err))
 		} else {
 			telemetry.ReportEvent(bgCtx, "prometheus target set")
 		}
 	}()
 
-	return instance, nil
+	return sbx, nil
 }
 
 func (s *Sandbox) EnsureClockSync(ctx context.Context) error {
@@ -222,7 +221,8 @@ func (s *Sandbox) syncClock(ctx context.Context) error {
 		return err
 	}
 
-	// TODO(huang-jl) why e2b do copying here?
+	// NOTE(huang-jl): After reading the body of response, the http client
+	// will reuse the connection
 	if _, err := io.Copy(io.Discard, response.Body); err != nil {
 		return err
 	}
@@ -250,7 +250,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 	tracer trace.Tracer,
 	dns *DNS,
 ) error {
-	childCtx, childSpan := tracer.Start(ctx, "delete-instance")
+	childCtx, childSpan := tracer.Start(ctx, "delete-sandbox")
 	defer childSpan.End()
 
 	var finalErr error
@@ -267,10 +267,10 @@ func (s *Sandbox) cleanupAfterFCStop(
 
 	err = s.env.Cleanup(childCtx, tracer)
 	if err != nil {
-		errMsg := fmt.Errorf("failed to delete instance files: %w", err)
+		errMsg := fmt.Errorf("failed to delete sandbox files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 	} else {
-		telemetry.ReportEvent(childCtx, "deleted instance files")
+		telemetry.ReportEvent(childCtx, "deleted sandbox files")
 	}
 	finalErr = errors.Join(finalErr, err)
 	return finalErr

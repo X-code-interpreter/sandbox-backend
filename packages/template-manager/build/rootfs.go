@@ -29,9 +29,8 @@ import (
 const (
 	ToMBShift = 20
 	// Max size of the rootfs file in MB.
-	maxRootfsSize   = 15000 << ToMBShift
-	cacheTimeout    = "48h"
-	overlayInitPath = "./overlay-init"
+	maxRootfsSize = 15000 << ToMBShift
+	cacheTimeout  = "48h"
 )
 
 //go:embed overlay-init
@@ -106,8 +105,6 @@ func (r *Rootfs) pullDockerImage(ctx context.Context, tracer trace.Tracer) error
 	return nil
 }
 
-// TODO(huang-jl): support more docker image for rootfs
-// now we directly reuse the image of e2b
 func (r *Rootfs) dockerTag() string {
 	if r.env.DockerImage == "" {
 		return "e2bdev/code-interpreter:latest"
@@ -420,7 +417,8 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	}()
 
 	// TODO(huang-jl) use export?
-	rootTar, _, downloadErr := r.docker.CopyFromContainer(childCtx, cont.ID, "/")
+	rootTar, downloadErr := r.docker.ContainerExport(childCtx, cont.ID)
+	// rootTar, _, downloadErr := r.docker.CopyFromContainer(childCtx, cont.ID, "/")
 	// downloadErr := r.docker.CopyFromContainer(cont.ID, docker.DownloadFromContainerOptions{
 	// 	Context:      childCtx,
 	// 	Path:         "/",
@@ -445,23 +443,57 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	telemetry.ReportEvent(childCtx, "converted container tar to ext4")
 
-	if err = r.makeRootfsWritable(childCtx, tracer); err != nil {
-		errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
+	// if err = r.makeRootfsWritable(childCtx, tracer); err != nil {
+	// 	errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
+	// 	telemetry.ReportCriticalError(childCtx, errMsg)
+
+	// 	return errMsg
+	// }
+	// telemetry.ReportEvent(childCtx, "made rootfs file writable")
+
+	// if err = r.resizeRootfs(childCtx, tracer, rootfsFile); err != nil {
+	// 	errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
+	// 	telemetry.ReportCriticalError(childCtx, errMsg)
+
+	// 	return errMsg
+	// }
+	// telemetry.ReportEvent(childCtx, "resized rootfs file")
+
+	if err = r.prepareWritableRootfs(childCtx, tracer); err != nil {
+		errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return errMsg
 	}
-	telemetry.ReportEvent(childCtx, "made rootfs file writable")
-
-	if err = r.resizeRootfs(childCtx, tracer, rootfsFile); err != nil {
-		errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
-	}
-	telemetry.ReportEvent(childCtx, "resized rootfs file")
 
 	return nil
+}
+
+func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "prepare-writable-rootfs")
+	defer childSpan.End()
+	writableRootfs, err := os.Create(r.env.tmpWritableRootfsPath())
+	if err != nil {
+		errMsg := fmt.Errorf("error creating writable rootfs file")
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return errMsg
+	}
+	defer writableRootfs.Close() // ignore error here
+
+	if err := writableRootfs.Truncate(r.env.DiskSizeMB << ToMBShift); err != nil {
+		errMsg := fmt.Errorf("error truncate writable rootfs file")
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return errMsg
+	}
+
+	cmd := exec.CommandContext(childCtx, "mkfs.ext4", r.env.tmpWritableRootfsPath())
+	mkfsStdoutWriter := telemetry.NewEventWriter(childCtx, "stdout")
+	cmd.Stdout = mkfsStdoutWriter
+
+	mkfsStderrWriter := telemetry.NewEventWriter(childCtx, "stderr")
+	cmd.Stderr = mkfsStderrWriter
+
+	return cmd.Run()
 }
 
 func (r *Rootfs) makeRootfsWritable(ctx context.Context, tracer trace.Tracer) error {

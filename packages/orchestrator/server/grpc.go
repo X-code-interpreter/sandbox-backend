@@ -22,7 +22,7 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	childSpan.SetAttributes(
 		attribute.String("env.id", req.Sandbox.TemplateID),
 		attribute.String("env.kernel.version", req.Sandbox.KernelVersion),
-		attribute.String("instance.id", req.Sandbox.SandboxID),
+		attribute.String("sandbox.id", req.Sandbox.SandboxID),
 	)
 
 	sandboxConfig := req.Sandbox
@@ -58,6 +58,7 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			telemetry.ReportCriticalError(waitCtx, errMsg)
 		}
 
+		// TODO(huang-jl): do not sleep
 		// Wait before removing all resources (see defers above)
 		time.Sleep(1 * time.Second)
 	}()

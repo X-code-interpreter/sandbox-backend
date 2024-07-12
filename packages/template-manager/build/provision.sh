@@ -17,11 +17,14 @@ ExecStart=
 ExecStart=-/sbin/agetty --noissue --autologin root %I 115200,38400,9600 vt102
 EOF
 
+# NOTE(huang-jl): Now the base rootfs will be a read-only device
+# so the swapfile inside it cannot be used. Moreover, file on overlayfs
+# cannot be used as swapfile, so disable swap inside the sandbox for now.
 # Add swapfile — we enable it in the preexec for envd
-mkdir /swap
-fallocate -l 128M /swap/swapfile
-chmod 600 /swap/swapfile
-mkswap /swap/swapfile
+# mkdir /swap
+# fallocate -l 128M /swap/swapfile
+# chmod 600 /swap/swapfile
+# mkswap /swap/swapfile
 
 # Set up envd service.
 mkdir -p /etc/systemd/system
@@ -40,7 +43,8 @@ ExecStart=/bin/bash -l -c "/usr/bin/envd"
 OOMPolicy=continue
 OOMScoreAdjust=-1000
 
-ExecStartPre=/bin/bash -c 'echo 0 > /proc/sys/vm/swappiness && swapon /swap/swapfile'
+# NOTE(by huang-jl): See above.
+# ExecStartPre=/bin/bash -c 'echo 0 > /proc/sys/vm/swappiness && swapon /swap/swapfile'
 
 [Install]
 WantedBy=multi-user.target
@@ -97,6 +101,9 @@ echo "user ALL=(ALL:ALL) NOPASSWD: ALL" >>/etc/sudoers
 
 mkdir -p /code
 mkdir -p /home/user
+# The following will used by overlay-init
+mkdir -p /overlay
+mkdir -p /rom
 
 chmod 777 -R /home/user
 chmod 777 -R /usr/local
