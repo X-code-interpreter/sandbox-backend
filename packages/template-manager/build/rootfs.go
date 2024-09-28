@@ -416,9 +416,10 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		}
 	}()
 
-	// TODO(huang-jl) use export?
-	rootTar, downloadErr := r.docker.ContainerExport(childCtx, cont.ID)
-	// rootTar, _, downloadErr := r.docker.CopyFromContainer(childCtx, cont.ID, "/")
+	// NOTE(by huang-jl) we cannot use ContainerExport, as it will only
+  // dump the files of the overlayfs, some files in other mountpoint, such as 
+  // /etc/resolve.conf will not be dumped properly
+	rootTar, _, downloadErr := r.docker.CopyFromContainer(childCtx, cont.ID, "/")
 	// downloadErr := r.docker.CopyFromContainer(cont.ID, docker.DownloadFromContainerOptions{
 	// 	Context:      childCtx,
 	// 	Path:         "/",
