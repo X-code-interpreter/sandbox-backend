@@ -1,20 +1,31 @@
 #!/bin/bash
 
-BASE_DIR=/mnt/pmem1
+BASE_DIR=/mnt/data/X-code-interpreter
 
 set -euo pipefail
 
 function build_version {
   local version=$1
+  local major_version=$(echo "$version" | cut -d '.' -f 1-2)
   echo "Starting build for kernel version: $version"
 
-  cp ../configs/"${version}.config" .config
+  if [ -e "../configs/${version}.config" ]; then
+    echo "using ${version}.config"
+    cp ../configs/"${version}.config" .config
+  elif [ -e "../configs/${major_version}.config" ]; then
+    echo "using ${major_version}.config"
+    cp ../configs/"${major_version}.config" .config
+  else
+    echo "No matching kernel config find for $version"
+    return
+  fi
 
   echo "Checking out repo for kernel at version: $version"
   git fetch --depth 1 origin "v${version}"
   git checkout FETCH_HEAD
 
   echo "Building kernel version: $version"
+  make olddefconfig
   make vmlinux -j "$(nproc)"
 
   echo "Copying finished build to builds directory"

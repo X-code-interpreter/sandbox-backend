@@ -5,7 +5,7 @@
   "memMB": 2048,
   "vcpu": 2,
   "diskMB": 5120,
-  "kernelVersion": "5.10.186",
+  "kernelVersion": "5.10.226",
   "hugePages": false,
   "dockerImg": "jialianghuang/metagpt-sandbox:latest",
   "noPull": true

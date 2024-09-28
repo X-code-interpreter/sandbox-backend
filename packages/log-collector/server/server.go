@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"go.uber.org/zap"
 )
 
@@ -21,20 +22,10 @@ type LogMeta struct {
 
 // make sure log dir already exists
 func init() {
-	if err := makeSureDir(consts.LogDiskDir); err != nil {
+	if err := utils.MakeSureDir(consts.LogDiskDir); err != nil {
 		errMsg := fmt.Errorf("check log dir failed: %w", err)
 		panic(errMsg)
 	}
-}
-
-func makeSureDir(dir string) error {
-	_, err := os.Stat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			err = os.MkdirAll(dir, 0o644)
-		}
-	}
-	return err
 }
 
 func EnvdLogHandler(w http.ResponseWriter, r *http.Request) {

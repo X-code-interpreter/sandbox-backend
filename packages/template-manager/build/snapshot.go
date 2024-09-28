@@ -14,10 +14,18 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/constants"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+func init() {
+	if err := utils.MakeSureDir(consts.KernelMountDir); err != nil {
+		err = fmt.Errorf("error make dir %s: %w", consts.KernelMountDir, err)
+		panic(err)
+	}
+}
 
 const (
 	waitTimeForFCStart  = 10 * time.Second
@@ -163,6 +171,10 @@ func (s *Snapshot) configBootSource(ctx context.Context) error {
 		consts.FcMaskLong,
 	)
 	// kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
+
+  // If want to check what's happening during boot
+  // use the following commented kernel args
+	// kernelArgs := fmt.Sprintf("quiet loglevel=6 console=ttyS0 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
 	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
 	kernelImagePath := s.env.KernelMountPath()
 	bootSourceConfig := operations.PutGuestBootSourceParams{

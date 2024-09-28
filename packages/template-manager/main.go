@@ -10,7 +10,7 @@ import (
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/build"
-	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/constants"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -39,7 +39,7 @@ func validateEnv(env *build.Env) error {
 	}
 
 	if env.KernelVersion == "" {
-		env.KernelVersion = constants.DefaultKernelVersion
+		env.KernelVersion = consts.DefaultKernelVersion
 	}
 
 	if env.FirecrackerBinaryPath == "" {

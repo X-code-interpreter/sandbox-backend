@@ -27,7 +27,7 @@ pivot() {
 
     # umount the old rootfs and the ext4 fs
     # only expose the new overlay rootfs
-    umount /rom/overlay && umount /rom
+    umount /rom/overlay && (umount /rom/dev || true) && umount /rom
 }
 
 # Overlay is configured under /overlay
