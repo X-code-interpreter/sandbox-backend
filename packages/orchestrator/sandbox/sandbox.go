@@ -29,14 +29,6 @@ var httpClient = http.Client{
 	Timeout: 5 * time.Second,
 }
 
-type SandboxState int
-
-const (
-	INVALID SandboxState = iota
-	RUNNING
-	KILLING
-)
-
 type Sandbox struct {
 	fc      *FcVM
 	env     *SandboxFiles
@@ -49,7 +41,7 @@ type Sandbox struct {
 	waitRes   error
 	cleanRes  error
 
-	State SandboxState
+	State orchestrator.SandboxState
 }
 
 func NewSandbox(
@@ -93,7 +85,7 @@ func NewSandbox(
 		return nil, errMsg
 	}
 
-	fsEnv, err := newSandboxFiles(
+	fsEnv, err := NewSandboxFiles(
 		childCtx,
 		config.SandboxID,
 		config.TemplateID,
@@ -158,7 +150,7 @@ func NewSandbox(
 		Config:  config,
 		Network: fcNet,
 		StartAt: time.Now(),
-		State:   RUNNING,
+		State:   orchestrator.SandboxState_RUNNING,
 	}
 
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
@@ -340,4 +332,8 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
 	}
 	return nil
+}
+
+func (s *Sandbox) GetPid() uint32 {
+	return uint32(s.fc.cmd.Process.Pid)
 }

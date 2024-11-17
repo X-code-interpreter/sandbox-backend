@@ -15,30 +15,57 @@ message SandboxConfig {
   map<string, string> metadata = 5;
 }
 
-
 // Data required for creating a new sandbox.
-message SandboxCreateRequest {
-  SandboxConfig sandbox = 1;
-}
+message SandboxCreateRequest { SandboxConfig sandbox = 1; }
 
 // Data about the sandbox.
-message SandboxCreateResponse {
-  string privateIP = 1;
-}
+message SandboxCreateResponse { string privateIP = 1; }
 
 // Data required for action on a specified sandbox.
-message SandboxRequest {
+message SandboxRequest { string sandboxID = 1; }
+
+enum SandboxState {
+  UNSPECIFY = 0;
+  INVALID = 1;
+  RUNNING = 2;
+  KILLING = 3;
+}
+
+// Information returned by List() or Search()
+message SandboxInfo {
   string sandboxID = 1;
+  optional string templateID = 2;
+  optional string kernelVersion = 3;
+  optional uint32 pid = 4;
+  optional int64 fcNetworkIdx = 5;
+  optional string privateIP = 6;
+  optional google.protobuf.Timestamp startTime = 7;
+  SandboxState state = 8;
 }
 
-message RunningSandbox {
-  SandboxConfig config = 1;
-  google.protobuf.Timestamp startTime = 2;
+message SandboxListRequest {
+  // List only orphan sandbox (which not maintained by orchestrator currently)
+  // e.g., previous orchestrator has crashed and left some sandbox.
+  // These sandboxes will only contains the Sandbox and privateIP field.
+  bool orphan = 1;
+  // List only running sandboxes.
+  bool running = 2;
 }
-
 // Data returned after listing all the sandboxes.
-message SandboxListResponse {
-  repeated RunningSandbox sandboxes = 1;
+message SandboxListResponse { repeated SandboxInfo sandboxes = 1; }
+
+message SandboxSearchResponse { optional SandboxInfo sandbox = 1; }
+
+message SandboxPurgeRequest {
+  // purge all orphan sandboxes, when specify this option
+  // the sandboxIDs will be omitted.
+  bool purgeAll = 1;
+  repeated string SandboxIDs = 2;
+}
+
+message SandboxPurgeResponse {
+  bool success = 1;
+  string msg = 2;
 }
 
 // Interface exported by the server.
@@ -46,10 +73,17 @@ service Sandbox {
   // Create is a gRPC service that creates a new sandbox.
   rpc Create(SandboxCreateRequest) returns (SandboxCreateResponse);
   // List is a gRPC service that returns a list of all the sandboxes.
-  rpc List(google.protobuf.Empty) returns (SandboxListResponse);
+  rpc List(SandboxListRequest) returns (SandboxListResponse);
   // Delete is a gRPC service that kills a sandbox.
   rpc Delete(SandboxRequest) returns (google.protobuf.Empty);
   // Invoke memory reclaim for a sandbox **on host**.
   rpc Deactive(SandboxRequest) returns (google.protobuf.Empty);
   // TODO(huang-jl): Active interface (which needs modification to FC)
+
+  // search a sandbox with id
+  rpc Search(SandboxRequest) returns (SandboxSearchResponse);
+  // Purge will be invoked in rare case. typically when orchestrator crashes
+  // and forget to cleanup the sandbox. So the client can call this method
+  // to purge the orphan sandbox manually
+  rpc Purge(SandboxPurgeRequest) returns (SandboxPurgeResponse);
 }

@@ -130,7 +130,7 @@ func waitForSocket(socketPath string, timeout time.Duration) error {
 	}
 }
 
-func newSandboxFiles(
+func NewSandboxFiles(
 	ctx context.Context,
 	sandboxID,
 	envID,
@@ -284,7 +284,14 @@ func (env *SandboxFiles) Cleanup(
 		telemetry.ReportEvent(childCtx, "removed socket")
 	}
 
-	err = os.RemoveAll(env.CgroupPath)
+	// retry for 3 times
+	for i := 0; i < 3; i++ {
+		err = os.RemoveAll(env.CgroupPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		errMsg := fmt.Errorf("error remove cgroup path: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)

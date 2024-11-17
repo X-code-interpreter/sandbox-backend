@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
@@ -95,6 +97,53 @@ func (m *FcNetworkManager) NewFcNetwork(sandboxID string) (*FcNetwork, error) {
 	}, nil
 }
 
+// Typically use to search network information with orphan sandbox.
+// See orchestrator grpc for more about orphan sandbox.
+func (nm *FcNetworkManager) SearchFcNetworkByID(ctx context.Context, tracer trace.Tracer, sandboxID string) (*FcNetwork, error) {
+	childCtx, childSpan := tracer.Start(ctx, "search-fc-network-by-id", trace.WithAttributes(
+		attribute.String("sandbox.id", sandboxID),
+	))
+	defer childSpan.End()
+	// netns of sandbox
+	netNsName := getFcNetNsName(sandboxID)
+	netNsHandle, err := netns.GetFromName(netNsName)
+	if err != nil {
+		errMsg := fmt.Errorf("get sandbox netns handle failed: %v", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return nil, errMsg
+	}
+	defer netNsHandle.Close()
+	netNsIdx, err := netlink.GetNetNsIdByFd(int(netNsHandle))
+	if err != nil {
+		errMsg := fmt.Errorf("get sandbox netns index failed: %v", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return nil, errMsg
+	}
+
+	// iterate through all the veth devices
+	// and try to match their netns link with the target netns
+	links, err := netlink.LinkList()
+	if err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		veth, ok := link.(*netlink.Veth)
+		if !ok {
+			continue
+		}
+		if veth.NetNsID == netNsIdx {
+			// we find the veth device!
+			fcNetIdx := getFcNetIdxFromVethName(veth.Name)
+			return &FcNetwork{
+				netNsName: netNsName,
+				idx:       int64(fcNetIdx),
+				sandboxID: sandboxID,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("do not find matched fc network for sandbox")
+}
+
 func (n *FcNetwork) VethIP() string {
 	// as veth mask is 30, which means every 4 address will be in different subnet
 	// NOTE each component in ip address is at most 8bit (i.e., 256)
@@ -138,6 +187,15 @@ func (n *FcNetwork) VethCIDR() string {
 
 func (n *FcNetwork) VethName() string {
 	return fmt.Sprintf("veth-ci-%d", n.idx)
+}
+
+// return -1 when meet invalid veth name
+func getFcNetIdxFromVethName(vethName string) int {
+	idx, err := strconv.Atoi(strings.TrimPrefix(vethName, "veth-ci-"))
+	if err != nil {
+		return -1
+	}
+	return idx
 }
 
 // The veth device ip address in Fc netns
@@ -191,7 +249,7 @@ func (n *FcNetwork) Setup(ctx context.Context, tracer trace.Tracer, dns *DNS) er
 		attribute.String("sandbox.tap.name", n.TapName()),
 		attribute.String("sandbox.veth.name", n.VethName()),
 		attribute.String("sandbox.vpeer.name", n.VpeerName()),
-		attribute.String("sandbox.namespace.id", n.netNsName),
+		attribute.String("sandbox.namespace.id", n.NetNsName()),
 		attribute.String("sandbox.id", n.sandboxID),
 	))
 	defer childSpan.End()
@@ -227,7 +285,7 @@ func (n *FcNetwork) Setup(ctx context.Context, tracer trace.Tracer, dns *DNS) er
 
 	// Create NS for the env instance
 	// after NewNamed we are already in new netns
-	ns, err := netns.NewNamed(n.netNsName)
+	ns, err := netns.NewNamed(n.NetNsName())
 	if err != nil {
 		errMsg := fmt.Errorf("cannot create new namespace: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -643,7 +701,7 @@ func (n *FcNetwork) Cleanup(ctx context.Context, tracer trace.Tracer, dns *DNS) 
 		}
 	}
 
-	err = netns.DeleteNamed(n.netNsName)
+	err = netns.DeleteNamed(n.NetNsName())
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting namespace: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -653,4 +711,12 @@ func (n *FcNetwork) Cleanup(ctx context.Context, tracer trace.Tracer, dns *DNS) 
 	}
 
 	return finalErr
+}
+
+func (n *FcNetwork) FcNetworkIdx() int64 {
+	return n.idx
+}
+
+func (n *FcNetwork) NetNsName() string {
+	return n.netNsName
 }

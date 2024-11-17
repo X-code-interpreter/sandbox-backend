@@ -10,6 +10,7 @@ import (
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/server"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/env"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/logging"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
@@ -18,8 +19,8 @@ import (
 func main() {
 	var port int
 
-	flag.IntVar(&port, "port", constants.DefaultOrchestratorPort, "port of orchestrator grpc server")
-	flag.IntVar(&port, "p", constants.DefaultOrchestratorPort, "port of orchestrator grpc server")
+	flag.IntVar(&port, "port", consts.DefaultOrchestratorPort, "port of orchestrator grpc server")
+	flag.IntVar(&port, "p", consts.DefaultOrchestratorPort, "port of orchestrator grpc server")
 	flag.Parse()
 
 	logger, err := logging.New(env.IsLocal())

@@ -2,19 +2,26 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/shirou/gopsutil/v4/process"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 )
+
+var _ orchestrator.SandboxServer = (*server)(nil)
 
 func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
 	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-create")
@@ -71,31 +78,103 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	}, nil
 }
 
-func (s *server) List(ctx context.Context, _ *empty.Empty) (*orchestrator.SandboxListResponse, error) {
-	_, childSpan := s.tracer.Start(ctx, "sandbox-list")
+func (s *server) List(ctx context.Context, req *orchestrator.SandboxListRequest) (*orchestrator.SandboxListResponse, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-list")
 	defer childSpan.End()
 
-	s.mu.Lock()
-	items := make([]*sandbox.Sandbox, 0, len(s.sandboxes))
-	for _, sbx := range s.sandboxes {
-		// only returned running sandbox
-		if sbx.State == sandbox.RUNNING {
-			items = append(items, sbx)
+	var (
+		err    error
+		result *orchestrator.SandboxListResponse
+	)
+
+	if req.Orphan {
+		result, err = s.listOrphan(childCtx)
+	} else {
+		result, err = s.list(childCtx, req.Running)
+	}
+	if err != nil {
+		return nil, status.New(codes.Internal, err.Error()).Err()
+	}
+	return result, nil
+}
+
+var sandboxIDRegExp = regexp.MustCompile(`ip netns exec ci-([0-9a-zA-Z-]+)`)
+
+func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListResponse, error) {
+	processes, err := process.Processes()
+	if err != nil {
+		return nil, fmt.Errorf("cannot get processes on orchestrator: %v", err)
+	}
+	results := make([]*orchestrator.SandboxInfo, 0)
+	for _, process := range processes {
+		cmdline, err := process.Cmdline()
+		if err != nil {
+			// TODO(huang-jl): return error or just continue?
+			continue
 		}
+		if !strings.HasPrefix(cmdline, "unshare") {
+			continue
+		}
+		if !strings.Contains(cmdline, "firecracker") {
+			continue
+		}
+		match := sandboxIDRegExp.FindStringSubmatch(cmdline)
+		if match == nil {
+			continue
+		}
+		sandboxID := match[1]
+		fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
+		if err != nil {
+			// we find the sandbox but cannot get the fcNetwork
+			return nil, err
+		}
+		// for orphan sandbox, we only populate privateIP and sandboxID
+		// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
+		// latter purge. But purge is a low-frequent event, so it is fine.
+		sbxFcNetworkIdx := fcNetwork.FcNetworkIdx()
+		sbxPrivateIP := fcNetwork.HostClonedIP()
+		sbxPid := uint32(process.Pid)
+		results = append(results, &orchestrator.SandboxInfo{
+			SandboxID:    sandboxID,
+			Pid:          &sbxPid,
+			FcNetworkIdx: &sbxFcNetworkIdx,
+			PrivateIP:    &sbxPrivateIP,
+		})
+	}
+	return &orchestrator.SandboxListResponse{
+		Sandboxes: results,
+	}, nil
+}
+
+// This function will only list the sandboxes maintained by current orchestrator.
+// To list orphan (e.g., sandboxes created by previous crashed orchestrator, see `listOrphan`)
+//
+// @running: only list sandboxes whose state = running
+func (s *server) list(_ context.Context, running bool) (*orchestrator.SandboxListResponse, error) {
+	s.mu.Lock()
+	results := make([]*orchestrator.SandboxInfo, 0, len(s.sandboxes))
+	for _, sbx := range s.sandboxes {
+		if running && sbx.State != orchestrator.SandboxState_RUNNING {
+			continue
+		}
+		sbxPid := sbx.GetPid()
+		sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
+		sbxPrivateIp := sbx.Network.HostClonedIP()
+		results = append(results, &orchestrator.SandboxInfo{
+			SandboxID:     sbx.SandboxID(),
+			Pid:           &sbxPid,
+			TemplateID:    &sbx.Config.TemplateID,
+			KernelVersion: &sbx.Config.KernelVersion,
+			FcNetworkIdx:  &sbxFcNetworkIdx,
+			PrivateIP:     &sbxPrivateIp,
+			StartTime:     timestamppb.New(sbx.StartAt),
+			State:         sbx.State,
+		})
 	}
 	s.mu.Unlock()
 
-	sandboxes := make([]*orchestrator.RunningSandbox, 0, len(items))
-
-	for _, sbx := range items {
-		sandboxes = append(sandboxes, &orchestrator.RunningSandbox{
-			Config:    sbx.Config,
-			StartTime: timestamppb.New(sbx.StartAt),
-		})
-	}
-
 	return &orchestrator.SandboxListResponse{
-		Sandboxes: sandboxes,
+		Sandboxes: results,
 	}, nil
 }
 
@@ -115,7 +194,7 @@ func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxRequest) (
 	}
 	// mark the sandbox as KILLING (but the actual delete is in the
 	// wait-sandbox goroutine, see Create())
-	sbx.State = sandbox.KILLING
+	sbx.State = orchestrator.SandboxState_KILLING
 
 	err := sbx.Stop(childCtx, s.tracer)
 	if err != nil {
@@ -176,4 +255,76 @@ func (s *server) Deactive(ctx context.Context, req *orchestrator.SandboxRequest)
 	s.metric.RecordDeactiveMem(childCtx, sbx, prevConsumption-currConsumption)
 
 	return &empty.Empty{}, nil
+}
+
+func (s *server) Search(ctx context.Context, req *orchestrator.SandboxRequest) (*orchestrator.SandboxSearchResponse, error) {
+	_, childSpan := s.tracer.Start(ctx, "sandbox-search", trace.WithAttributes(
+		attribute.String("sandbox.id", req.SandboxID),
+	))
+	defer childSpan.End()
+
+	// NOTE(huang-jl): Do not find in Search() is not considering as error
+	sbx, ok := s.GetSandbox(req.SandboxID)
+	if !ok {
+		return &orchestrator.SandboxSearchResponse{
+			Sandbox: nil,
+		}, nil
+	}
+	sbxPid := sbx.GetPid()
+	sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
+	sbxPrivateIp := sbx.Network.HostClonedIP()
+	return &orchestrator.SandboxSearchResponse{
+		Sandbox: &orchestrator.SandboxInfo{
+			SandboxID:     sbx.SandboxID(),
+			Pid:           &sbxPid,
+			TemplateID:    &sbx.Config.TemplateID,
+			KernelVersion: &sbx.Config.KernelVersion,
+			FcNetworkIdx:  &sbxFcNetworkIdx,
+			PrivateIP:     &sbxPrivateIp,
+			State:         sbx.State,
+			StartTime:     timestamppb.New(sbx.StartAt),
+		},
+	}, nil
+}
+
+func (s *server) Purge(ctx context.Context, req *orchestrator.SandboxPurgeRequest) (*orchestrator.SandboxPurgeResponse, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-purge", trace.WithAttributes(
+		attribute.Bool("purge-all", req.PurgeAll),
+		attribute.StringSlice("sandbox-ids", req.SandboxIDs),
+	))
+	defer childSpan.End()
+	var (
+		finalErr     error
+		sandboxesIDs = req.SandboxIDs
+	)
+	if req.PurgeAll {
+		orphanSandboxes, err := s.listOrphan(childCtx)
+		if err != nil {
+			return &orchestrator.SandboxPurgeResponse{
+				Success: false,
+				Msg:     err.Error(),
+			}, nil
+		} else {
+			for _, sbx := range orphanSandboxes.Sandboxes {
+				sandboxesIDs = append(sandboxesIDs, sbx.SandboxID)
+			}
+		}
+	}
+	// start to purge
+	for _, sandboxID := range sandboxesIDs {
+		if err := s.purgeOne(childCtx, sandboxID); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
+	}
+	if finalErr != nil {
+		return &orchestrator.SandboxPurgeResponse{
+			Success: false,
+			Msg:     finalErr.Error(),
+		}, nil
+	} else {
+		return &orchestrator.SandboxPurgeResponse{
+			Success: true,
+			Msg:     "",
+		}, nil
+	}
 }

@@ -70,7 +70,7 @@ func newFCVM(
 		env.KernelMountDirPath,
 	)
 
-	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", fcNet.netNsName)
+	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", fcNet.NetNsName())
 	fcCmd := fmt.Sprintf(
 		"%s --api-sock %s",
 		env.FirecrackerBinaryPath,
