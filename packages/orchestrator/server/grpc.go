@@ -98,12 +98,12 @@ func (s *server) List(ctx context.Context, req *orchestrator.SandboxListRequest)
 	return result, nil
 }
 
-var sandboxIDRegExp = regexp.MustCompile(`ip netns exec ci-([0-9a-zA-Z-]+)`)
+var sandboxIDRegExp = regexp.MustCompile(fmt.Sprintf(`/%s/([0-9a-zA-Z-]+)`, sandbox.EnvInstancesDirName))
 
 func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListResponse, error) {
 	processes, err := process.Processes()
 	if err != nil {
-		return nil, fmt.Errorf("cannot get processes on orchestrator: %v", err)
+		return nil, fmt.Errorf("cannot get processes on orchestrator: %w", err)
 	}
 	results := make([]*orchestrator.SandboxInfo, 0)
 	for _, process := range processes {
@@ -118,6 +118,9 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 		if !strings.Contains(cmdline, "firecracker") {
 			continue
 		}
+		if !strings.Contains(cmdline, "mount --bind") {
+			continue
+		}
 		match := sandboxIDRegExp.FindStringSubmatch(cmdline)
 		if match == nil {
 			continue
@@ -126,7 +129,11 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 		fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
 		if err != nil {
 			// we find the sandbox but cannot get the fcNetwork
-			return nil, err
+			return nil, fmt.Errorf("cannot get fc network of orphan process: %w", err)
+		}
+		templateID, err := parseEnvIdFromOrphanProcess(process)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse env id of orphan process: %w", err)
 		}
 		// for orphan sandbox, we only populate privateIP and sandboxID
 		// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
@@ -139,6 +146,8 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 			Pid:          &sbxPid,
 			FcNetworkIdx: &sbxFcNetworkIdx,
 			PrivateIP:    &sbxPrivateIP,
+			TemplateID:   &templateID,
+			State:        orchestrator.SandboxState_ORPHAN,
 		})
 	}
 	return &orchestrator.SandboxListResponse{

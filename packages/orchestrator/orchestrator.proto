@@ -29,6 +29,7 @@ enum SandboxState {
   INVALID = 1;
   RUNNING = 2;
   KILLING = 3;
+  ORPHAN = 4;
 }
 
 // Information returned by List() or Search()

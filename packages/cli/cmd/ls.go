@@ -20,7 +20,8 @@ var lsCmd = &cobra.Command{
   sandbox-cli sandbox ls --ip 127.0.0.1 --port 5000 SandboxID-1
   sandbox-cli sandbox ls -i 192.168.47.247 -p 6666 SandboxID-1 SandboxID-2
 `,
-	RunE: lsSandbox,
+	SilenceUsage: true,
+	RunE:         lsSandbox,
 }
 
 func init() {
@@ -40,6 +41,7 @@ func init() {
 }
 
 func lsAll(ip string, port int) error {
+	slog.Info("start list all sandbox")
 	client, err := lib.NewOrchestratorClient(ip, port)
 	if err != nil {
 		return err
@@ -48,13 +50,14 @@ func lsAll(ip string, port int) error {
 	req := orchestrator.SandboxListRequest{}
 	sandboxes, err := client.List(ctx, &req)
 	if err != nil {
-		return fmt.Errorf("error during sending grpc request: %v", err)
+		return fmt.Errorf("error during sending grpc request: %w", err)
 	}
 	lib.PrintSandboxInfo("All sandboxes in orchestrator", sandboxes.Sandboxes...)
 	return nil
 }
 
 func lsOrphan(ip string, port int) error {
+	slog.Info("start list orphan sandbox")
 	client, err := lib.NewOrchestratorClient(ip, port)
 	if err != nil {
 		return err
@@ -63,7 +66,7 @@ func lsOrphan(ip string, port int) error {
 	req := orchestrator.SandboxListRequest{Orphan: true}
 	sandboxes, err := client.List(ctx, &req)
 	if err != nil {
-		return fmt.Errorf("error during sending grpc request: %v", err)
+		return fmt.Errorf("error during sending grpc request: %w", err)
 	}
 	lib.PrintSandboxInfo("Orphan sandboxes", sandboxes.Sandboxes...)
 	return nil
@@ -92,11 +95,11 @@ func lsSubset(ip string, port int, sandboxIDs ...string) error {
 func lsSandbox(cmd *cobra.Command, args []string) error {
 	ip, err := cmd.Flags().GetString("ip")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot get orchestrator ip from args: %w", err)
 	}
 	port, err := cmd.Flags().GetInt("port")
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot get orchestrator port from args: %w", err)
 	}
 	orphan, err := cmd.Flags().GetBool("orphan")
 	if err != nil {
@@ -112,15 +115,15 @@ func lsSandbox(cmd *cobra.Command, args []string) error {
 
 	if all {
 		if err := lsAll(ip, port); err != nil {
-			return fmt.Errorf("error while list all sandbox: %v", err)
+			return fmt.Errorf("error while list all sandbox: %w", err)
 		}
 	} else if orphan {
 		if err := lsOrphan(ip, port); err != nil {
-			return fmt.Errorf("error while list all sandbox: %v", err)
+			return fmt.Errorf("error while list all sandbox: %w", err)
 		}
 	} else {
 		if err := lsSubset(ip, port, args...); err != nil {
-			return fmt.Errorf("error while list sandbox: %v", err)
+			return fmt.Errorf("error while list sandbox: %w", err)
 		}
 	}
 	return nil

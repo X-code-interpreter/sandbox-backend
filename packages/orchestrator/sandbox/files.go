@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/KarpelesLab/reflink"
@@ -284,13 +285,13 @@ func (env *SandboxFiles) Cleanup(
 		telemetry.ReportEvent(childCtx, "removed socket")
 	}
 
-	// retry for 3 times
+	// NOTE(huang-jl): maybe process has not been clean completely by kernel,
+	// so retry rm cgroup dir for 3 times
 	for i := 0; i < 3; i++ {
-		err = os.RemoveAll(env.CgroupPath)
-		if err == nil {
+		if err := syscall.Rmdir(env.CgroupPath); err == nil {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(time.Duration(20*(i+1)) * time.Millisecond)
 	}
 	if err != nil {
 		errMsg := fmt.Errorf("error remove cgroup path: %w", err)

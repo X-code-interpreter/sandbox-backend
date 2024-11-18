@@ -2,12 +2,11 @@ package lib
 
 import (
 	"os"
-	"time"
-
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 )
 
 func PrintSandboxInfo(title string, sandboxes ...*orchestrator.SandboxInfo) {
@@ -17,12 +16,13 @@ func PrintSandboxInfo(title string, sandboxes ...*orchestrator.SandboxInfo) {
 
 	t.SetTitle(title)
 	t.Style().Title = table.TitleOptions{Align: text.AlignCenter}
-	t.AppendHeader(table.Row{"SandboxID", "TemplateID", "PrivateIP", "StartTime"})
+	t.AppendHeader(table.Row{"SandboxID", "TemplateID", "PrivateIP", "Pid", "State", "StartTime"})
 	for _, sbx := range sandboxes {
 		var (
-			templateID string
-			privateIP  string
-			startTime  time.Time
+			templateID string = "Unknown"
+			privateIP  string = "Unknown"
+			startTime  string = "Unknown"
+			pid        uint32
 		)
 		if sbx.TemplateID != nil {
 			templateID = *sbx.TemplateID
@@ -31,9 +31,12 @@ func PrintSandboxInfo(title string, sandboxes ...*orchestrator.SandboxInfo) {
 			privateIP = *sbx.PrivateIP
 		}
 		if sbx.StartTime != nil {
-			startTime = sbx.StartTime.AsTime()
+			startTime = sbx.StartTime.AsTime().String()
 		}
-		t.AppendRow(table.Row{sbx.SandboxID, templateID, privateIP, startTime})
+		if sbx.Pid != nil {
+			pid = *sbx.Pid
+		}
+		t.AppendRow(table.Row{sbx.SandboxID, templateID, privateIP, pid, sbx.State.String(), startTime})
 	}
 	t.Render()
 }

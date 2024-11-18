@@ -121,20 +121,16 @@ func (s *server) shutdown() {
 
 var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, sandbox.EnvInstancesDirName))
 
-func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
-	var envID string
-
-	fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
-	if err != nil {
-		errMsg := fmt.Errorf("search fc network failed: %v", err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-		return errMsg
-	}
-	// Similar to (*Sandbox).cleanupAfterFCStop()
-	// 1. kill process
+// EnvID's alias is TemplateID
+//
+// When do not find the orphan process with sandboxID, this method will raise error.
+// This method will also make sure that there is at most one process matches the sandboxID.
+func getOrphanProcess(sandboxID string) (*process.Process, error) {
+	var res *process.Process
+	netNsName := sandbox.GetFcNetNsName(sandboxID)
 	processes, err := process.Processes()
 	if err != nil {
-		return fmt.Errorf("cannot get processes on orchestrator: %v", err)
+		return res, fmt.Errorf("cannot get processes on orchestrator: %w", err)
 	}
 	for _, process := range processes {
 		cmdline, err := process.Cmdline()
@@ -144,43 +140,86 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 		}
 		if strings.HasPrefix(cmdline, "unshare") &&
 			strings.Contains(cmdline, "firecracker") &&
-			strings.Contains(cmdline, fmt.Sprintf("ip netns exec %s", fcNetwork.NetNsName())) {
-			// we find the sandbox process
-			if err := process.Kill(); err != nil {
-				errMsg := fmt.Errorf("error when killing sandbox process [pid: %d]: %v", process.Pid, err)
-				telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-				return errMsg
+			strings.Contains(cmdline, fmt.Sprintf("ip netns exec %s", netNsName)) {
+			if res != nil {
+				return nil, fmt.Errorf("find more than one process match sandbox id %s", sandboxID)
 			}
-			envIDMatch := envIDRegex.FindStringSubmatch(cmdline)
-			if envIDMatch == nil {
-				errMsg := fmt.Errorf("error when parse env id from sandbox: %v", err)
-				telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-				return errMsg
-			}
-			envID = string(envIDMatch[1])
-			break
+			res = process
 		}
 	}
+	if res == nil {
+		return nil, fmt.Errorf("cannot find orphan process with sandbox id %s", sandboxID)
+	}
+	return res, nil
+}
 
-	// 2. cleanup network
-	if err := fcNetwork.Cleanup(ctx, s.tracer, s.dns); err != nil {
-		errMsg := fmt.Errorf("cleanup fc network failed: %v", err)
+// Please make sure the process has not been killed when calling this method
+func parseEnvIdFromOrphanProcess(proc *process.Process) (string, error) {
+	var res string
+	cmdline, err := proc.Cmdline()
+	if err != nil {
+		return res, fmt.Errorf("cannot cmdline from orphan process: %w", err)
+	}
+	envIDMatch := envIDRegex.FindStringSubmatch(cmdline)
+	if envIDMatch == nil {
+		return res, fmt.Errorf("cannot parse env id from orphan process (cmdline: %s)", cmdline)
+	}
+	res = string(envIDMatch[1])
+	return res, nil
+}
+
+func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
+	fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
+	if err != nil {
+		errMsg := fmt.Errorf("search fc network failed: %w", err)
 		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
 		return errMsg
 	}
+	// Similar to (*Sandbox).cleanupAfterFCStop()
+	// 1. kill process
+	telemetry.ReportEvent(ctx, "try to get orphan process", attribute.String("sandbox-id", sandboxID))
+	proc, err := getOrphanProcess(sandboxID)
+	if err != nil {
+		errMsg := fmt.Errorf("get orphan process failed: %w", err)
+		telemetry.ReportCriticalError(ctx, errMsg, attribute.String("sandbox-id", sandboxID))
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "get orphan process", attribute.String("sandbox-id", sandboxID))
+	envID, err := parseEnvIdFromOrphanProcess(proc)
+	if err != nil {
+		errMsg := fmt.Errorf("get orphan process env id failed: %w", err)
+		telemetry.ReportCriticalError(ctx, errMsg, attribute.String("sandbox-id", sandboxID))
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "get env id of orphan process", attribute.String("sandbox-id", sandboxID))
+	if err := proc.Kill(); err != nil {
+		errMsg := fmt.Errorf("error when killing sandbox process [pid: %d]: %w", proc.Pid, err)
+		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "kill orphan process", attribute.String("sandbox-id", sandboxID))
+
+	// 2. cleanup network
+	if err := fcNetwork.Cleanup(ctx, s.tracer, s.dns); err != nil {
+		errMsg := fmt.Errorf("cleanup fc network failed: %w", err)
+		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "cleanup network of orphan process", attribute.String("sandbox-id", sandboxID))
 
 	// 3. cleanup env
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
 	// so skip kernelVersion, kernelsDir, kernelMountDir and firecrackerBinaryPath args
 	env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "", "", "", "")
 	if err != nil {
-		errMsg := fmt.Errorf("new sandbox failed: %v", err)
+		errMsg := fmt.Errorf("new sandbox failed: %w", err)
 		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
 	}
 	if err := env.Cleanup(ctx, s.tracer); err != nil {
-		errMsg := fmt.Errorf("cleanup sandbox file failed: %v", err)
+		errMsg := fmt.Errorf("cleanup sandbox file failed: %w", err)
 		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
 		return errMsg
 	}
+	telemetry.ReportEvent(ctx, "cleanup files of orphan process", attribute.String("sandbox-id", sandboxID))
 	return nil
 }

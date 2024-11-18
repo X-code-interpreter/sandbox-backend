@@ -65,7 +65,7 @@ type FcNetwork struct {
 	sandboxID string
 }
 
-func getFcNetNsName(sandboxID string) string {
+func GetFcNetNsName(sandboxID string) string {
 	// ci means code interpreter
 	return "ci-" + sandboxID
 }
@@ -89,7 +89,7 @@ func (m *FcNetworkManager) NewFcNetwork(sandboxID string) (*FcNetwork, error) {
 	if idx > MaxNetworkNumber {
 		return nil, fmt.Errorf("network instance number exceed the upper bound")
 	}
-	netNsName := getFcNetNsName(sandboxID)
+	netNsName := GetFcNetNsName(sandboxID)
 	return &FcNetwork{
 		netNsName: netNsName,
 		idx:       idx,
@@ -97,25 +97,25 @@ func (m *FcNetworkManager) NewFcNetwork(sandboxID string) (*FcNetwork, error) {
 	}, nil
 }
 
-// Typically use to search network information with orphan sandbox.
-// See orchestrator grpc for more about orphan sandbox.
+// Typically used to search network information for orphan sandbox.
+// For more, check orchestrator grpc about orphan sandbox.
 func (nm *FcNetworkManager) SearchFcNetworkByID(ctx context.Context, tracer trace.Tracer, sandboxID string) (*FcNetwork, error) {
 	childCtx, childSpan := tracer.Start(ctx, "search-fc-network-by-id", trace.WithAttributes(
 		attribute.String("sandbox.id", sandboxID),
 	))
 	defer childSpan.End()
 	// netns of sandbox
-	netNsName := getFcNetNsName(sandboxID)
+	netNsName := GetFcNetNsName(sandboxID)
 	netNsHandle, err := netns.GetFromName(netNsName)
 	if err != nil {
-		errMsg := fmt.Errorf("get sandbox netns handle failed: %v", err)
+		errMsg := fmt.Errorf("get sandbox netns handle failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return nil, errMsg
 	}
 	defer netNsHandle.Close()
 	netNsIdx, err := netlink.GetNetNsIdByFd(int(netNsHandle))
 	if err != nil {
-		errMsg := fmt.Errorf("get sandbox netns index failed: %v", err)
+		errMsg := fmt.Errorf("get sandbox netns index failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return nil, errMsg
 	}

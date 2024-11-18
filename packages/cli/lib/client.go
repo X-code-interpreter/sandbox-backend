@@ -22,7 +22,7 @@ func NewOrchestratorClient(ip string, port int) (orchestrator.SandboxClient, err
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create grpc client failed: %v", err)
+		return nil, fmt.Errorf("create grpc client failed: %w", err)
 	}
 	return orchestrator.NewSandboxClient(conn), nil
 }
