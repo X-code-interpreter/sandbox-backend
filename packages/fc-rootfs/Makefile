@@ -16,3 +16,8 @@ build-metagpt:
 build-default:
 	docker build -t jialianghuang/default-sandbox:latest \
 		--network host  -f default.Dockerfile .
+
+.PHONY: build-agent
+build-agent:
+	docker build -t jialianghuang/default-agent:latest \
+		--network host  -f agent.Dockerfile .

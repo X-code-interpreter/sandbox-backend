@@ -1,12 +1,12 @@
 {
-  "template": "default-sandbox",
-  "startCmd": "",
+  "template": "mini-code-interpreter",
+  "startCmd": "/home/user/.jupyter/start-up.sh",
   "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
   "memMB": 2048,
-  "vcpu": 2,
+  "vcpu": 1,
   "diskMB": 5120,
   "kernelVersion": "5.10.226",
   "hugePages": false,
-  "dockerImg": "jialianghuang/default-sandbox:latest",
+  "dockerImg": "jialianghuang/default-code-interpreter:latest",
   "noPull": true
 }

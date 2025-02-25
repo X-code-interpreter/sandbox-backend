@@ -51,9 +51,9 @@ func Upload(logger *zap.SugaredLogger, w http.ResponseWriter, r *http.Request) {
 
 	var newFilePath string
 
+	uid, gid, homedir, _, userErr := user.GetUser(user.DefaultUser)
 	if filepath == "" {
 		// Create a new file in the user's homedir if no path in the form is specified
-		_, _, homedir, _, userErr := user.GetUser(user.DefaultUser)
 		if userErr != nil {
 			logger.Panic("Error getting user home dir:", userErr)
 			http.Error(w, userErr.Error(), http.StatusInternalServerError)
@@ -74,6 +74,13 @@ func Upload(logger *zap.SugaredLogger, w http.ResponseWriter, r *http.Request) {
 	dst, err := os.Create(newFilePath)
 	if err != nil {
 		logger.Error("Error creating the file:", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	if err = os.Chown(newFilePath, int(uid), int(gid)); err != nil {
+		logger.Error("Error chown the file:", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 
 		return

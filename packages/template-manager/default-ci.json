@@ -1,7 +1,7 @@
 {
   "template": "default-code-interpreter",
   "startCmd": "/home/user/.jupyter/start-up.sh",
-  "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/debug/firecracker",
+  "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
   "memMB": 2048,
   "vcpu": 2,
   "diskMB": 5120,

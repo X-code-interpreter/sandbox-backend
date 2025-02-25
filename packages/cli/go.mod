@@ -4,10 +4,10 @@ go 1.21.0
 
 require (
 	github.com/X-code-interpreter/sandbox-backend/packages/shared v0.0.0
+	github.com/google/uuid v1.6.0
 	github.com/jedib0t/go-pretty/v6 v6.6.1
 	github.com/spf13/cobra v1.8.1
 	google.golang.org/grpc v1.64.0
-	google.golang.org/protobuf v1.34.1
 )
 
 require (
@@ -19,6 +19,7 @@ require (
 	golang.org/x/sys v0.20.0 // indirect
 	golang.org/x/text v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240515191416-fc5f0ca64291 // indirect
+	google.golang.org/protobuf v1.34.1 // indirect
 )
 
 replace github.com/X-code-interpreter/sandbox-backend/packages/shared v0.0.0 => ../shared

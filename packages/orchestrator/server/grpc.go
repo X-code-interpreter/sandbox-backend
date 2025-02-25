@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -58,11 +60,21 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		defer sbx.CleanupAfterFCStop(waitCtx, s.tracer, s.dns)
 
 		err := sbx.Wait()
-		// TODO(huang-jl) Since we use `kill` to stop the FC process
-		// the Wait() must return error, should we still report it?
 		if err != nil {
-			errMsg := fmt.Errorf("failed to wait for Sandbox: %w", err)
-			telemetry.ReportCriticalError(waitCtx, errMsg)
+			if exiterr, ok := err.(*exec.ExitError); ok {
+				// NOTE(huang-jl) Since we use `kill` to stop the FC process
+				// the Wait() must return error, we do not report it as error here
+				status := exiterr.Sys().(syscall.WaitStatus)
+				if status.Signaled() && status.Signal() == syscall.SIGKILL {
+					telemetry.ReportEvent(waitCtx, "sandbox waited due to sigkill")
+				} else {
+					errMsg := fmt.Errorf("sandbox waited get non-sigkill signal: %w", err)
+					telemetry.ReportError(waitCtx, errMsg)
+				}
+			} else {
+				errMsg := fmt.Errorf("failed to wait for Sandbox: %w", err)
+				telemetry.ReportCriticalError(waitCtx, errMsg)
+			}
 		}
 
 		// TODO(huang-jl): do not sleep

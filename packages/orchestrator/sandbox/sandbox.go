@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	waitSocketTimeout = 2 * time.Second
+	waitSocketTimeout = 5 * time.Second
 )
 
 // Default MaxIdleConns is 100.
-// Default IdleConnTimeout  is 90 seconds.
+// Default IdleConnTimeout is 90 seconds.
 var httpClient = http.Client{
-	Timeout: 5 * time.Second,
+	Timeout: 10 * time.Second,
 }
 
 type Sandbox struct {

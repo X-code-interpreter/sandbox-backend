@@ -174,6 +174,8 @@ func main() {
 		logger.Panicw("failed to register process service", "error", err)
 	}
 
+	simpleProcessManager := process.NewSimpleProcessManager(logger)
+
 	reg := prometheus.NewRegistry()
 	monitor := monitor.NewService(logger.Named("systemMonitor"))
 	reg.MustRegister(monitor)
@@ -211,6 +213,9 @@ func main() {
 	router.PathPrefix("/debug/pprof").Handler(http.DefaultServeMux)
 	// The /file route used for downloading and uploading files via SDK.
 	router.HandleFunc("/file", fileHandler)
+	router.HandleFunc("/process/create", simpleProcessManager.Create)
+	router.HandleFunc("/process/wait", simpleProcessManager.Wait)
+	router.HandleFunc("/process/kill", simpleProcessManager.Kill)
 	// The /metric route used to monitor the system load inside VM
 	router.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{
 		Registry: reg,
@@ -218,7 +223,8 @@ func main() {
 
 	server := &http.Server{
 		ReadTimeout:  300 * time.Second,
-		WriteTimeout: 300 * time.Second,
+		WriteTimeout: 0,
+		IdleTimeout:  60 * time.Second,
 		Addr:         fmt.Sprintf("0.0.0.0:%d", serverPort),
 		Handler:      handlers.CORS(handlers.AllowedMethods([]string{"GET", "POST", "PUT"}), handlers.AllowedOrigins([]string{"*"}))(router),
 	}

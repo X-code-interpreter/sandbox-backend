@@ -1,12 +1,12 @@
 {
-  "template": "default-sandbox",
+  "template": "mini-agent",
   "startCmd": "",
   "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
   "memMB": 2048,
-  "vcpu": 2,
+  "vcpu": 1,
   "diskMB": 5120,
   "kernelVersion": "5.10.226",
   "hugePages": false,
-  "dockerImg": "jialianghuang/default-sandbox:latest",
+  "dockerImg": "jialianghuang/default-agent:latest",
   "noPull": true
 }

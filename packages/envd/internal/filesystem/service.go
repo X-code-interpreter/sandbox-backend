@@ -12,6 +12,7 @@ import (
 
 	fswatcher "github.com/e2b-dev/infra/packages/envd/internal/filesystem/watcher"
 	"github.com/e2b-dev/infra/packages/envd/internal/subscriber"
+	"github.com/e2b-dev/infra/packages/envd/internal/user"
 )
 
 type FileInfoResponse struct {
@@ -274,6 +275,16 @@ func (s *Service) MakeDir(dirpath string) error {
 		)
 
 		return fmt.Errorf("error creating a new directory '%s': %w", dirpath, err)
+	}
+
+	uid, gid, _, _, _ := user.GetUser(user.DefaultUser)
+	if err := os.Chown(dirpath, int(uid), int(gid)); err != nil {
+		s.logger.Errorw("Failed to chown the new directory",
+			"dirpath", dirpath,
+			"error", err,
+		)
+
+		return fmt.Errorf("error chown the new directory '%s': %w", dirpath, err)
 	}
 
 	return nil
