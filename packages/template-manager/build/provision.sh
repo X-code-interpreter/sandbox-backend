@@ -120,9 +120,8 @@ systemctl enable envd
 systemctl enable chrony 2>&1
 
 # Add start command service if the start command is not empty.
-if [ -n "{{ .StartCmd }}" ]; then
-
-  cat <<EOF >/etc/systemd/system/start_cmd.service
+{{ if .StartCmd -}}
+cat <<EOF >/etc/systemd/system/start_cmd.service
 [Unit]
 Description=Start Command Service
 After=multi-user.target network-online.target
@@ -136,13 +135,18 @@ Group=user
 OOMScoreAdjust=200
 ExecStart=/bin/bash -l -c "{{ .StartCmd }}"
 OOMPolicy=kill
+{{ if .StartCmdEnvFilePath -}}
+EnvironmentFile={{ .StartCmdEnvFilePath }}
+{{ end -}}
+{{ if .StartCmdWorkingDirectory -}}
+WorkingDirectory={{ .StartCmdWorkingDirectory }}
+{{ end -}}
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  systemctl enable start_cmd
-
-fi
+systemctl enable start_cmd
+{{ end -}}
 
 echo "Finished provisioning script"

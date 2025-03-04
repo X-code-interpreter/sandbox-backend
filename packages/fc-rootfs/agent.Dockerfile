@@ -13,3 +13,6 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 COPY ./agent-requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Please do this in the fc-rootfs directory before building
+# mkdir ./microbench && mount --bind /path/to/microbench/ ./microbench
+COPY ./microbench/llm_apps /home/user/llm_apps

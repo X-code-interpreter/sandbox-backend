@@ -26,6 +26,9 @@ var EnvInstanceTemplate = text_template.Must(text_template.New("provisioning-scr
 
 type Env struct {
 	template.VmTemplate
+
+	StartCmdEnvFilePath      string `json:"startCmdEnvFilePath,omitempty"`
+	StartCmdWorkingDirectory string `json:"startCmdWorkingDirectory,omitempty"`
 }
 
 func (e *Env) tmpMemfilePath() string {

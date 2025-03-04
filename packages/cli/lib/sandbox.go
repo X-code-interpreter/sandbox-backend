@@ -38,5 +38,8 @@ func PrintSandboxInfo(title string, sandboxes ...*orchestrator.SandboxInfo) {
 		}
 		t.AppendRow(table.Row{sbx.SandboxID, templateID, privateIP, pid, sbx.State.String(), startTime})
 	}
+	t.SortBy([]table.SortBy{
+		{Name: "StartTime", Mode: table.Asc},
+	})
 	t.Render()
 }

@@ -127,11 +127,15 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	var scriptDef bytes.Buffer
 
 	err = EnvInstanceTemplate.Execute(&scriptDef, struct {
-		EnvID    string
-		StartCmd string
+		EnvID                    string
+		StartCmd                 string
+		StartCmdEnvFilePath      string
+		StartCmdWorkingDirectory string
 	}{
-		EnvID:    r.env.EnvID,
-		StartCmd: strings.ReplaceAll(r.env.StartCmd, "\"", "\\\""),
+		EnvID:                    r.env.EnvID,
+		StartCmd:                 strings.ReplaceAll(r.env.StartCmd, "\"", "\\\""),
+		StartCmdEnvFilePath:      constants.StartCmdEnvFilePath,
+		StartCmdWorkingDirectory: r.env.StartCmdWorkingDirectory,
 	})
 	if err != nil {
 		errMsg := fmt.Errorf("error executing provision script: %w", err)
@@ -258,6 +262,13 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		filesToTar = append(filesToTar, fileToTar{
 			localPath: overlayInitTmp.Name(),
 			tarPath:   constants.OverlayInitPath,
+		})
+	}
+
+	if len(r.env.StartCmdEnvFilePath) > 0 {
+		filesToTar = append(filesToTar, fileToTar{
+			localPath: r.env.StartCmdEnvFilePath,
+			tarPath:   constants.StartCmdEnvFilePath,
 		})
 	}
 
