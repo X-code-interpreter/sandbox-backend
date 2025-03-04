@@ -31,8 +31,7 @@ var httpClient = http.Client{
 
 type Sandbox struct {
 	fc      *FcVM
-	env     *SandboxFiles
-	Config  *orchestrator.SandboxConfig
+	Env     *SandboxFiles
 	Network *FcNetwork
 	StartAt time.Time
 
@@ -89,9 +88,6 @@ func NewSandbox(
 		childCtx,
 		config.SandboxID,
 		config.TemplateID,
-		config.KernelVersion,
-		consts.KernelsDir,
-		consts.KernelMountDir,
 		constants.FCBinaryPath,
 	)
 	if err != nil {
@@ -146,8 +142,7 @@ func NewSandbox(
 
 	sbx := &Sandbox{
 		fc:      fc,
-		env:     fsEnv,
-		Config:  config,
+		Env:     fsEnv,
 		Network: fcNet,
 		StartAt: time.Now(),
 		State:   orchestrator.SandboxState_RUNNING,
@@ -257,7 +252,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 
 	finalErr = errors.Join(finalErr, err)
 
-	err = s.env.Cleanup(childCtx, tracer)
+	err = s.Env.Cleanup(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to delete sandbox files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -294,7 +289,7 @@ func (s *Sandbox) Wait() error {
 }
 
 func (s *Sandbox) SandboxID() string {
-	return s.Config.SandboxID
+	return s.Env.SandboxID
 }
 
 // This will create a json file under sandbox's PrometheusTargetPath.
@@ -323,13 +318,13 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 			},
 		},
 	}
-	f, err := os.OpenFile(s.env.PrometheusTargetPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+	f, err := os.OpenFile(s.Env.PrometheusTargetPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
 	if err != nil {
-		return fmt.Errorf("open prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
+		return fmt.Errorf("open prometheus target file (%s) failed: %w", s.Env.PrometheusTargetPath(), err)
 	}
 	defer f.Close()
 	if err := json.NewEncoder(f).Encode(config); err != nil {
-		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.env.PrometheusTargetPath, err)
+		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.Env.PrometheusTargetPath(), err)
 	}
 	return nil
 }

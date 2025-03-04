@@ -30,10 +30,10 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	defer childSpan.End()
 	childSpan.SetAttributes(
 		attribute.String("env.id", req.Sandbox.TemplateID),
-		attribute.String("env.kernel.version", req.Sandbox.KernelVersion),
 		attribute.String("sandbox.id", req.Sandbox.SandboxID),
 	)
 
+	// TODO(huang-jl): support attach metadata to sandbox
 	sandboxConfig := req.Sandbox
 	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, s.dns, sandboxConfig, s.netManager)
 	if err != nil {
@@ -85,8 +85,20 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	s.InsertSandbox(sbx)
 	s.metric.AddSandbox(childCtx, sbx)
 
+	sbxPid := sbx.GetPid()
+	sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
+	sbxPrivateIp := sbx.Network.HostClonedIP()
 	return &orchestrator.SandboxCreateResponse{
-		PrivateIP: sbx.Network.HostClonedIP(),
+		Info: &orchestrator.SandboxInfo{
+			SandboxID:     sbx.SandboxID(),
+			Pid:           &sbxPid,
+			TemplateID:    &sbx.Env.EnvID,
+			KernelVersion: &sbx.Env.KernelVersion,
+			FcNetworkIdx:  &sbxFcNetworkIdx,
+			PrivateIP:     &sbxPrivateIp,
+			StartTime:     timestamppb.New(sbx.StartAt),
+			State:         sbx.State,
+		},
 	}, nil
 }
 
@@ -184,8 +196,8 @@ func (s *server) list(_ context.Context, running bool) (*orchestrator.SandboxLis
 		results = append(results, &orchestrator.SandboxInfo{
 			SandboxID:     sbx.SandboxID(),
 			Pid:           &sbxPid,
-			TemplateID:    &sbx.Config.TemplateID,
-			KernelVersion: &sbx.Config.KernelVersion,
+			TemplateID:    &sbx.Env.EnvID,
+			KernelVersion: &sbx.Env.KernelVersion,
 			FcNetworkIdx:  &sbxFcNetworkIdx,
 			PrivateIP:     &sbxPrivateIp,
 			StartTime:     timestamppb.New(sbx.StartAt),
@@ -298,8 +310,8 @@ func (s *server) Search(ctx context.Context, req *orchestrator.SandboxRequest) (
 		Sandbox: &orchestrator.SandboxInfo{
 			SandboxID:     sbx.SandboxID(),
 			Pid:           &sbxPid,
-			TemplateID:    &sbx.Config.TemplateID,
-			KernelVersion: &sbx.Config.KernelVersion,
+			TemplateID:    &sbx.Env.EnvID,
+			KernelVersion: &sbx.Env.KernelVersion,
 			FcNetworkIdx:  &sbxFcNetworkIdx,
 			PrivateIP:     &sbxPrivateIp,
 			State:         sbx.State,

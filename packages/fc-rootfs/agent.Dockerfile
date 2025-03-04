@@ -1,4 +1,4 @@
-FROM python:3.10.12-bookworm
+FROM python:3.12.3-bookworm
 
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
   sed -i 's/http:/https:/g' /etc/apt/sources.list.d/debian.sources

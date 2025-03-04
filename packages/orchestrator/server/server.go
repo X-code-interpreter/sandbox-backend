@@ -209,8 +209,8 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 
 	// 3. cleanup env
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
-	// so skip kernelVersion, kernelsDir, kernelMountDir and firecrackerBinaryPath args
-	env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "", "", "", "")
+	// so skip firecrackerBinaryPath args
+	env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "")
 	if err != nil {
 		errMsg := fmt.Errorf("new sandbox failed: %w", err)
 		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))

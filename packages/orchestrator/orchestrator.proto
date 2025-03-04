@@ -7,22 +7,11 @@ option go_package = "https://github.com/X-code-interpreter/sandbox-backend/packa
 
 message SandboxConfig {
   string templateID = 1;
-  string kernelVersion = 2;
-  // bool hugePages = 5;
   // Maximum length of the instance in Hours
   int64 maxInstanceLength = 3;
   string sandboxID = 4;
   map<string, string> metadata = 5;
 }
-
-// Data required for creating a new sandbox.
-message SandboxCreateRequest { SandboxConfig sandbox = 1; }
-
-// Data about the sandbox.
-message SandboxCreateResponse { string privateIP = 1; }
-
-// Data required for action on a specified sandbox.
-message SandboxRequest { string sandboxID = 1; }
 
 enum SandboxState {
   UNSPECIFY = 0;
@@ -42,7 +31,17 @@ message SandboxInfo {
   optional string privateIP = 6;
   optional google.protobuf.Timestamp startTime = 7;
   SandboxState state = 8;
+  map<string, string> metadata = 9;
 }
+
+// Data required for creating a new sandbox.
+message SandboxCreateRequest { SandboxConfig sandbox = 1; }
+
+// Data about the sandbox.
+message SandboxCreateResponse { SandboxInfo info = 1; }
+
+// Data required for action on a specified sandbox.
+message SandboxRequest { string sandboxID = 1; }
 
 message SandboxListRequest {
   // List only orphan sandbox (which not maintained by orchestrator currently)

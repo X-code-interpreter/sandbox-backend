@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/cli/lib"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -42,7 +41,6 @@ sandbox-cli sandbox create --template default-sandbox.`,
 		sandboxID := uuid.New()
 		sbxConfig := &orchestrator.SandboxConfig{
 			TemplateID:    template,
-			KernelVersion: consts.DefaultKernelVersion,
 			// NOTE(huang-jl): This has not been used for now
 			MaxInstanceLength: 3,
 			SandboxID:         sandboxID.String(),

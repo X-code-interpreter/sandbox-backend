@@ -48,7 +48,7 @@ func newFCVM(
 	fcNet *FcNetwork,
 	traceID string,
 ) (*FcVM, error) {
-	childCtx, childSpan := tracer.Start(ctx, "new-fc-vm")
+	_, childSpan := tracer.Start(ctx, "new-fc-vm")
 	defer childSpan.End()
 
 	vmmCtx, _ := tracer.Start(
@@ -60,14 +60,16 @@ func newFCVM(
 	// to the running path (where snapshotting happend)
 	rootfsMountCmd := fmt.Sprintf(
 		"mount --bind %s %s && ",
-		env.EnvInstancePath,
-		env.RunningPath,
+		env.EnvInstancePath(),
+		env.TmpRunningPath(),
 	)
 
+	// NOTE(huang-jl): we should not use env.KernelMountPath here
+	// as it points to a file (e.g., /path/to/vmlinux), instead of a directory
 	kernelMountCmd := fmt.Sprintf(
 		"mount --bind %s %s && ",
-		env.KernelDirPath,
-		env.KernelMountDirPath,
+		env.KernelDirPath(),
+		env.KernelMountDirPath(),
 	)
 
 	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", fcNet.NetNsName())
@@ -86,16 +88,11 @@ func newFCVM(
 		"-c",
 		rootfsMountCmd+kernelMountCmd+inNetNSCmd+fcCmd,
 	)
-	// NOTE(huang-jl): do not forget to close this fd
-	cgroupFd, err := syscall.Open(env.CgroupPath, syscall.O_RDONLY, 0)
-	if err != nil {
-		errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		return nil, errMsg
-	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:      true,
-		CgroupFD:    cgroupFd,
+		Setsid: true,
+		// NOTE(huang-jl): do not forget set CgroupFD latter in [FcVm.startVM]
+		// for example:
+		// CgroupFD:    cgroupFd,
 		UseCgroupFD: true,
 	}
 	cmdStdoutReader, cmdStdoutWriter := io.Pipe()
@@ -204,7 +201,13 @@ func (fc *FcVM) startVM(
 	go fc.redirectStderr()
 	go fc.redirectStdout()
 
-	cgroupFd := fc.cmd.SysProcAttr.CgroupFD
+	cgroupFd, err := syscall.Open(fc.env.CgroupPath(), syscall.O_RDONLY, 0)
+	if err != nil {
+		errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return errMsg
+	}
+	fc.cmd.SysProcAttr.CgroupFD = cgroupFd
 	defer func() {
 		if err := syscall.Close(cgroupFd); err != nil {
 			errMsg := fmt.Errorf("close cgroup fd failed: %w", err)
@@ -212,7 +215,7 @@ func (fc *FcVM) startVM(
 		}
 	}()
 
-	err := fc.cmd.Start()
+	err = fc.cmd.Start()
 	if err != nil {
 		errMsg := fmt.Errorf("start vm failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -241,8 +244,8 @@ func (fc *FcVM) startVM(
 	telemetry.ReportEvent(childCtx, "fc loaded snapshot",
 		attribute.String("sanbodx.id", fc.id),
 		attribute.String("sanbodx.env.id", fc.env.EnvID),
-		attribute.String("sanbodx.env.path", fc.env.EnvPath),
-		attribute.String("sanbodx.instance.path", fc.env.EnvInstancePath),
+		attribute.String("sanbodx.env.path", fc.env.EnvDirPath()),
+		attribute.String("sanbodx.instance.path", fc.env.EnvInstancePath()),
 		attribute.String("sanbodx.socket.path", fc.env.SocketPath),
 	)
 
@@ -252,7 +255,7 @@ func (fc *FcVM) startVM(
 func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "load-snapshot", trace.WithAttributes(
 		attribute.String("instance.socket.path", fc.env.SocketPath),
-		attribute.String("instance.snapshot.root_path", fc.env.EnvPath),
+		attribute.String("instance.snapshot.root_path", fc.env.EnvDirPath()),
 	))
 	defer childSpan.End()
 

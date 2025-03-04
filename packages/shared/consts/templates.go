@@ -8,13 +8,14 @@ const (
 	KernelMountDir = MntPrefix + "/fc-vm"      // the kernel resides in the per-fc mount ns
 	KernelName     = "vmlinux"
 
-  HostEnvdPath  = "/root/codes/sandbox-backend/packages/envd/bin/envd"
+	HostEnvdPath  = "/root/codes/sandbox-backend/packages/envd/bin/envd"
 	GuestEnvdPath = "/usr/bin/envd"
 
 	DefaultKernelVersion = "5.10.226"
 
-	RootfsName     = "rootfs.ext4"            // the base image
-	WritableFsName = "writable-rootfs.ext4" // an empty writable image
-	SnapfileName   = "snapfile"
-	MemfileName    = "memfile"
+	RootfsName       = "rootfs.ext4"          // the base image
+	WritableFsName   = "writable-rootfs.ext4" // an empty writable image
+	SnapfileName     = "snapfile"
+	MemfileName      = "memfile"
+	TemplateFileName = "template.json"
 )

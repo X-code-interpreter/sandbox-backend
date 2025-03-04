@@ -18,7 +18,7 @@ import (
 // NOTE(huang-jl): The ctx already contains a span
 // TODO(huang-jl): use multigen lru (which requires Host Kernel version >= 6.1)
 func (s *Sandbox) Deactive(ctx context.Context) error {
-	cgroupPath := s.env.CgroupPath
+	cgroupPath := s.Env.CgroupPath()
 	// Since (*os.File).Write method will handle EAGAIN internally
 	// so I choose to use syscall directly.
 	reclaimTrigger, err := syscall.Open(filepath.Join(cgroupPath, "memory.reclaim"), syscall.O_WRONLY, 0)
@@ -65,7 +65,7 @@ func parseMemoryCurrentFile(f *os.File) (int64, error) {
 // Get the memory consumption from host, internally it query
 // memory.current file in the cgroup v2.
 func (s *Sandbox) HostMemConsumption() (int64, error) {
-	cgroupPath := s.env.CgroupPath
+	cgroupPath := s.Env.CgroupPath()
 	currentFile, err := os.Open(filepath.Join(cgroupPath, "memory.current"))
 	if err != nil {
 		return 0, fmt.Errorf("open memory.current failed: %w", err)

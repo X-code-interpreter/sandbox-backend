@@ -3,13 +3,15 @@ package build
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"text/template"
+	text_template "text/template"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -20,102 +22,44 @@ const (
 
 //go:embed provision.sh
 var provisionEnvScriptFile string
-var EnvInstanceTemplate = template.Must(template.New("provisioning-script").Parse(provisionEnvScriptFile))
+var EnvInstanceTemplate = text_template.Must(text_template.New("provisioning-script").Parse(provisionEnvScriptFile))
 
 type Env struct {
-	// Unique ID of the env.
-	// required
-	EnvID string `json:"template"`
-
-	// Command to run when building the env.
-	// optional (default: empty)
-	StartCmd string `json:"startCmd"`
-
-	// Path to the firecracker binary.
-	// optional (default: firecracker)
-	FirecrackerBinaryPath string `json:"fcPath"`
-
-	// The number of vCPUs to allocate to the VM.
-	// required
-	VCpuCount int64 `json:"vcpu"`
-
-	// The amount of RAM memory to allocate to the VM, in MiB.
-	// required
-	MemoryMB int64 `json:"memMB"`
-
-	// The amount of free disk to allocate to the VM, in MiB.
-	// required
-	DiskSizeMB int64 `json:"diskMB"`
-
-	// Real size of the rootfs after building the env.
-	rootfsSize int64
-
-	// Version of the kernel.
-	// optional
-	KernelVersion string `json:"kernelVersion"`
-
-	// Docker Image to used as the base image
-	// if it is empty, it will be "e2bdev/code-interpreter:latest"
-	// optional
-	DockerImage string `json:"dockerImg"`
-
-	// Use local docker image (i.e., do not pull from remote docker registry)
-	NoPull bool `json:"noPull"`
-
-	HugePages bool `json:"hugePages,omitempty"`
-}
-
-// Path to the directory where the env is stored.
-func (e *Env) envDirPath() string {
-	return filepath.Join(consts.EnvsDisk, e.EnvID)
-}
-
-func (e *Env) envRootfsPath() string {
-	return filepath.Join(e.envDirPath(), consts.RootfsName)
-}
-
-func (e *Env) envWritableRootfsPath() string {
-	return filepath.Join(e.envDirPath(), consts.WritableFsName)
-}
-
-func (e *Env) envMemfilePath() string {
-	return filepath.Join(e.envDirPath(), consts.MemfileName)
-}
-
-func (e *Env) envSnapfilePath() string {
-	return filepath.Join(e.envDirPath(), consts.SnapfileName)
-}
-
-func (e *Env) tmpRunningPath() string {
-	return filepath.Join(e.envDirPath(), "run")
-}
-
-// The running directory where save the rootfs
-func (e *Env) tmpRootfsPath() string {
-	return filepath.Join(e.tmpRunningPath(), consts.RootfsName)
-}
-
-// The running directory where save the rootfs
-func (e *Env) tmpWritableRootfsPath() string {
-	return filepath.Join(e.tmpRunningPath(), consts.WritableFsName)
+	template.VmTemplate
 }
 
 func (e *Env) tmpMemfilePath() string {
-	return filepath.Join(e.tmpRunningPath(), consts.MemfileName)
+	return filepath.Join(e.TmpRunningPath(), consts.MemfileName)
 }
 
 func (e *Env) tmpSnapfilePath() string {
-	return filepath.Join(e.tmpRunningPath(), consts.SnapfileName)
+	return filepath.Join(e.TmpRunningPath(), consts.SnapfileName)
 }
 
-// The dir on the host where should keep the kernel vmlinux
-func (e *Env) KernelDirPath() string {
-	return filepath.Join(consts.KernelsDir, e.KernelVersion)
-}
+// Dump the env (i.e., the configuration) to json file under [VmTemplate.EnvDirPath].
+func (e *Env) dumpEnv(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "dump-env-file")
+	defer childSpan.End()
 
-// The path of the kernel image path that should passed to FC
-func (e *Env) KernelMountPath() string {
-	return filepath.Join(consts.KernelMountDir, consts.KernelName)
+	f, err := os.Create(e.TemplateFilePath())
+	if err != nil {
+		errMsg := fmt.Errorf("error creating template file: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err = enc.Encode(e.VmTemplate); err != nil {
+		errMsg := fmt.Errorf("error encode template: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	return nil
 }
 
 func (e *Env) initialize(ctx context.Context, tracer trace.Tracer) error {
@@ -129,7 +73,7 @@ func (e *Env) initialize(ctx context.Context, tracer trace.Tracer) error {
 		}
 	}()
 
-	err = os.MkdirAll(e.tmpRunningPath(), 0o777)
+	err = os.MkdirAll(e.TmpRunningPath(), 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error creating tmp build dir: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -145,7 +89,7 @@ func (e *Env) Cleanup(ctx context.Context, tracer trace.Tracer) {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup")
 	defer childSpan.End()
 
-	err := os.RemoveAll(e.tmpRunningPath())
+	err := os.RemoveAll(e.TmpRunningPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error cleaning up env files: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -158,7 +102,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "move-to-env-dir")
 	defer childSpan.End()
 
-	err := os.Rename(e.tmpSnapfilePath(), e.envSnapfilePath())
+	err := os.Rename(e.tmpSnapfilePath(), e.EnvSnapfilePath())
 	if err != nil {
 		errMsg := fmt.Errorf("error moving snapshot file: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -168,7 +112,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 
 	telemetry.ReportEvent(childCtx, "moved snapshot file")
 
-	err = os.Rename(e.tmpMemfilePath(), e.envMemfilePath())
+	err = os.Rename(e.tmpMemfilePath(), e.EnvMemfilePath())
 	if err != nil {
 		errMsg := fmt.Errorf("error moving memfile: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -178,7 +122,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 
 	telemetry.ReportEvent(childCtx, "moved memfile")
 
-	err = os.Rename(e.tmpRootfsPath(), e.envRootfsPath())
+	err = os.Rename(e.TmpRootfsPath(), e.EnvRootfsPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error moving rootfs: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -188,12 +132,14 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 
 	telemetry.ReportEvent(childCtx, "moved rootfs")
 
-	err = os.Rename(e.tmpWritableRootfsPath(), e.envWritableRootfsPath())
-	if err != nil {
-		errMsg := fmt.Errorf("error moving writable rootfs: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	if e.Overlay {
+		err = os.Rename(e.TmpWritableRootfsPath(), e.EnvWritableRootfsPath())
+		if err != nil {
+			errMsg := fmt.Errorf("error moving writable rootfs: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
 
-		return errMsg
+			return errMsg
+		}
 	}
 
 	telemetry.ReportEvent(childCtx, "moved writable rootfs")
@@ -249,6 +195,14 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 	}
 
 	err = e.MoveToEnvDir(childCtx, tracer)
+	if err != nil {
+		errMsg := fmt.Errorf("error moving env files to their final destination during while building env '%s' during build: %w", e.EnvID, err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	err = e.dumpEnv(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("error moving env files to their final destination during while building env '%s' during build: %w", e.EnvID, err)
 		telemetry.ReportCriticalError(childCtx, errMsg)

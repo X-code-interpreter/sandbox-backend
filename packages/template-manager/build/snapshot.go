@@ -164,18 +164,22 @@ func (s *Snapshot) startFcVM(
 }
 
 func (s *Snapshot) configBootSource(ctx context.Context) error {
+	var kernelArgs string
 	ip := fmt.Sprintf(
 		"%s::%s:%s:instance:eth0:off:8.8.8.8",
 		consts.FcAddr,
 		consts.FcTapAddress,
 		consts.FcMaskLong,
 	)
-	// kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
 
-  // If want to check what's happening during boot
-  // use the following commented kernel args
+	// If want to check what's happening during boot
+	// use the following commented kernel args
 	// kernelArgs := fmt.Sprintf("quiet loglevel=6 console=ttyS0 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
-	kernelArgs := fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
+	if s.env.Overlay {
+		kernelArgs = fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
+	} else {
+		kernelArgs = fmt.Sprintf("quiet loglevel=1 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on", ip)
+	}
 	kernelImagePath := s.env.KernelMountPath()
 	bootSourceConfig := operations.PutGuestBootSourceParams{
 		Context: ctx,
@@ -190,48 +194,51 @@ func (s *Snapshot) configBootSource(ctx context.Context) error {
 }
 
 func (s *Snapshot) configBlkDrivers(ctx context.Context) error {
-	driverId := "rootfs"
 	ioEngine := "Async"
 
 	// first prepare the base rootfs
+	driverId := "rootfs"
 	isRootDevice := true
-	isReadOnly := true
-	pathOnHost := s.env.tmpRootfsPath()
-	driversConfig := operations.PutGuestDriveByIDParams{
-		Context: ctx,
-		DriveID: driverId,
-		Body: &models.Drive{
-			DriveID:      &driverId,
-			PathOnHost:   pathOnHost,
-			IsRootDevice: &isRootDevice,
-			IsReadOnly:   isReadOnly,
-			IoEngine:     &ioEngine,
+	pathOnHost := s.env.TmpRootfsPath()
+	blkDriverConfigs := []operations.PutGuestDriveByIDParams{
+		{
+			Context: ctx,
+			DriveID: driverId,
+			Body: &models.Drive{
+				DriveID:      &driverId,
+				PathOnHost:   pathOnHost,
+				IsRootDevice: &isRootDevice,
+				IsReadOnly:   s.env.Overlay,
+				IoEngine:     &ioEngine,
+			},
 		},
 	}
 
-	if _, err := s.client.Operations.PutGuestDriveByID(&driversConfig); err != nil {
-		return err
-	}
-
-	// second prepare the writable rootfs
-	driverId = "writablefs"
-	pathOnHost = s.env.tmpWritableRootfsPath()
-	isReadOnly = false
-	isRootDevice = false
-	driversConfig = operations.PutGuestDriveByIDParams{
-		Context: ctx,
-		DriveID: driverId,
-		Body: &models.Drive{
-			DriveID:      &driverId,
-			PathOnHost:   pathOnHost,
-			IsRootDevice: &isRootDevice,
-			IsReadOnly:   isReadOnly,
-			IoEngine:     &ioEngine,
+	if s.env.Overlay {
+		driverId = "writablefs"
+		pathOnHost = s.env.TmpWritableRootfsPath()
+		isRootDevice = false
+		blkDriverConfigs = append(blkDriverConfigs, operations.PutGuestDriveByIDParams{
+			Context: ctx,
+			DriveID: driverId,
+			Body: &models.Drive{
+				DriveID:      &driverId,
+				PathOnHost:   pathOnHost,
+				IsRootDevice: &isRootDevice,
+				IsReadOnly:   false,
+				IoEngine:     &ioEngine,
+			},
 		},
+		)
 	}
 
-	_, err := s.client.Operations.PutGuestDriveByID(&driversConfig)
-	return err
+	for _, config := range blkDriverConfigs {
+		if _, err := s.client.Operations.PutGuestDriveByID(&config); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Snapshot) configNetIf(ctx context.Context) error {

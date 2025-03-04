@@ -7,7 +7,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"go.opentelemetry.io/otel"
 )
@@ -26,7 +25,6 @@ func TestEnd2End(t *testing.T) {
 	}
 	sandboxConfig := &orchestrator.SandboxConfig{
 		TemplateID:    "default-code-interpreter",
-		KernelVersion: consts.DefaultKernelVersion,
 		SandboxID:     "test-end-2-end",
 	}
 	sandbox, err := NewSandbox(ctx, tracer, dns, sandboxConfig, nm)

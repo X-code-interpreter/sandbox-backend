@@ -223,10 +223,15 @@ func (n *FcNetwork) GuestIP() string {
 	return consts.FcAddr
 }
 
-// as difference instances of sandbox will have same ip address
-// we need a rule in iptable NAT table to change the ip address
-// to each of their own cloned ip address on Host.
+// Difference instances of sandbox will have same ip address,
+// because they are restored from the same snapshot, and during
+// snapshot creation, they are all configured with the same ip address (in guest).
+// We need a rule in iptable NAT table to change the source ip address from each
+// instance, to a seperate ip address (named HostClonedIP) before the network packet
+// leaving the guest VM's namespace.
 // With that, we can access difference sandbox with differnet ip.
+//
+// We can take this HostClonedIP as the ip address of each VM from the view on host.
 func (n *FcNetwork) HostClonedIP() string {
 	low := n.idx%254 + 1 // range from [1, 254]
 	high := n.idx / 254

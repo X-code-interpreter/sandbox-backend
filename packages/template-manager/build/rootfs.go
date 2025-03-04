@@ -114,9 +114,11 @@ func (r *Rootfs) dockerTag() string {
 
 // This is a complex function
 // it will
-//  1. create a rootfs (ext4) through docker container
-//     it will populate the necessary services.
-//  2. start a FC and generate snapshot file
+//  1. create a docker container with base image
+//  2. the container will execute the intialized process as in provision.sh,
+//     including populate the necessary systemd service.
+//  3. use docker CopyFromContainer, dumping the container root image, which will
+//     be used by firecracker.
 func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "create-rootfs-file")
 	defer childSpan.End()
@@ -139,25 +141,6 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	}
 
 	telemetry.ReportEvent(childCtx, "executed provision script env")
-
-	overlayInitTmp, err := os.CreateTemp("", "overlay-init")
-	if err != nil {
-		errMsg := fmt.Errorf("error create temp file for overlay-init: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
-	}
-	if _, err := overlayInitTmp.Write(overlayInitContent); err != nil {
-		errMsg := fmt.Errorf("error write overlay-init temp file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
-	}
-	telemetry.ReportEvent(childCtx, "overlay-init temp file created")
-	defer func() {
-		overlayInitTmp.Close()
-		os.Remove(overlayInitTmp.Name())
-	}()
 
 	pidsLimit := int64(200)
 
@@ -250,11 +233,35 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 			localPath: consts.HostEnvdPath,
 			tarPath:   consts.GuestEnvdPath,
 		},
-		{
+	}
+	// initialize overlay init only when enable overlay
+	if r.env.Overlay {
+		overlayInitTmp, err := os.CreateTemp("", "overlay-init")
+		if err != nil {
+			errMsg := fmt.Errorf("error create temp file for overlay-init: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
+
+			return errMsg
+		}
+		if _, err := overlayInitTmp.Write(overlayInitContent); err != nil {
+			errMsg := fmt.Errorf("error write overlay-init temp file: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
+
+			return errMsg
+		}
+		telemetry.ReportEvent(childCtx, "overlay-init temp file created")
+		defer func() {
+			overlayInitTmp.Close()
+			os.Remove(overlayInitTmp.Name())
+		}()
+
+		filesToTar = append(filesToTar, fileToTar{
 			localPath: overlayInitTmp.Name(),
 			tarPath:   constants.OverlayInitPath,
-		},
+		})
 	}
+
+	// used to transfer container root image with host
 	pr, pw := io.Pipe()
 
 	go func() {
@@ -396,7 +403,7 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		return errMsg
 	}
 
-	rootfsFile, err := os.Create(r.env.tmpRootfsPath())
+	rootfsFile, err := os.Create(r.env.TmpRootfsPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error creating rootfs file: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -417,8 +424,8 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	}()
 
 	// NOTE(by huang-jl) we cannot use ContainerExport, as it will only
-  // dump the files of the overlayfs, some files in other mountpoint, such as 
-  // /etc/resolve.conf will not be dumped properly
+	// dump the files of the overlayfs, some files in other mountpoint, such as
+	// /etc/resolve.conf will not be dumped properly
 	rootTar, _, downloadErr := r.docker.CopyFromContainer(childCtx, cont.ID, "/")
 	// downloadErr := r.docker.CopyFromContainer(cont.ID, docker.DownloadFromContainerOptions{
 	// 	Context:      childCtx,
@@ -444,36 +451,55 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	telemetry.ReportEvent(childCtx, "converted container tar to ext4")
 
-	// if err = r.makeRootfsWritable(childCtx, tracer); err != nil {
-	// 	errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
-	// 	telemetry.ReportCriticalError(childCtx, errMsg)
+	if r.env.Overlay {
+		if err = r.prepareWritableRootfs(childCtx, tracer); err != nil {
+			errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
 
-	// 	return errMsg
-	// }
-	// telemetry.ReportEvent(childCtx, "made rootfs file writable")
+			return errMsg
+		}
+	} else {
+		if err = r.createOneRootfs(childCtx, tracer, rootfsFile); err != nil {
+			errMsg := fmt.Errorf("error create one roofs file: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
 
-	// if err = r.resizeRootfs(childCtx, tracer, rootfsFile); err != nil {
-	// 	errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
-	// 	telemetry.ReportCriticalError(childCtx, errMsg)
-
-	// 	return errMsg
-	// }
-	// telemetry.ReportEvent(childCtx, "resized rootfs file")
-
-	if err = r.prepareWritableRootfs(childCtx, tracer); err != nil {
-		errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
+			return errMsg
+		}
 	}
 
 	return nil
 }
 
+// Create single rootfs file for firecracker
+//
+// @rootfsFile: the rootfs file for rootfs
+func (r *Rootfs) createOneRootfs(ctx context.Context, tracer trace.Tracer, rootfsFile *os.File) error {
+	if err := r.makeRootfsWritable(ctx, tracer); err != nil {
+		errMsg := fmt.Errorf("error making rootfs file writable: %w", err)
+		telemetry.ReportCriticalError(ctx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "made rootfs file writable")
+
+	if err := r.resizeRootfs(ctx, tracer, rootfsFile); err != nil {
+		errMsg := fmt.Errorf("error resizing rootfs file: %w", err)
+		telemetry.ReportCriticalError(ctx, errMsg)
+
+		return errMsg
+	}
+	telemetry.ReportEvent(ctx, "resized rootfs file")
+	return nil
+}
+
+// Create two files, one as read-only lower-layer with pre-installed package,
+// the other as (empty) writable layer. They will be mounted as overlayfs inside the firecracker.
+//
+// @rootTar: the value returned by docker client CopyFromContainer
 func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "prepare-writable-rootfs")
 	defer childSpan.End()
-	writableRootfs, err := os.Create(r.env.tmpWritableRootfsPath())
+	writableRootfs, err := os.Create(r.env.TmpWritableRootfsPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error creating writable rootfs file")
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -487,7 +513,7 @@ func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer)
 		return errMsg
 	}
 
-	cmd := exec.CommandContext(childCtx, "mkfs.ext4", r.env.tmpWritableRootfsPath())
+	cmd := exec.CommandContext(childCtx, "mkfs.ext4", r.env.TmpWritableRootfsPath())
 	mkfsStdoutWriter := telemetry.NewEventWriter(childCtx, "stdout")
 	cmd.Stdout = mkfsStdoutWriter
 
@@ -501,7 +527,7 @@ func (r *Rootfs) makeRootfsWritable(ctx context.Context, tracer trace.Tracer) er
 	tuneContext, tuneSpan := tracer.Start(ctx, "tune-rootfs-file-cmd")
 	defer tuneSpan.End()
 
-	cmd := exec.CommandContext(tuneContext, "tune2fs", "-O ^read-only", r.env.tmpRootfsPath())
+	cmd := exec.CommandContext(tuneContext, "tune2fs", "-O ^read-only", r.env.TmpRootfsPath())
 
 	tuneStdoutWriter := telemetry.NewEventWriter(tuneContext, "stdout")
 	cmd.Stdout = tuneStdoutWriter
@@ -531,7 +557,7 @@ func (r *Rootfs) resizeRootfs(ctx context.Context, tracer trace.Tracer, rootfsFi
 	// In bytes
 	rootfsSize := rootfsStats.Size() + r.env.DiskSizeMB<<ToMBShift
 
-	r.env.rootfsSize = rootfsSize
+	r.env.RootfsSize = rootfsSize
 
 	err = rootfsFile.Truncate(rootfsSize)
 	if err != nil {
@@ -543,7 +569,7 @@ func (r *Rootfs) resizeRootfs(ctx context.Context, tracer trace.Tracer, rootfsFi
 
 	telemetry.ReportEvent(resizeContext, "truncated rootfs file to size of build + defaultDiskSizeMB")
 
-	cmd := exec.CommandContext(resizeContext, "resize2fs", r.env.tmpRootfsPath())
+	cmd := exec.CommandContext(resizeContext, "resize2fs", r.env.TmpRootfsPath())
 
 	resizeStdoutWriter := telemetry.NewEventWriter(resizeContext, "stdout")
 	cmd.Stdout = resizeStdoutWriter

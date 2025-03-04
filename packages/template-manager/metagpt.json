@@ -8,6 +8,7 @@
   "kernelVersion": "5.10.226",
   "hugePages": false,
   "dockerImg": "jialianghuang/metagpt-sandbox:latest",
-  "noPull": true
+  "noPull": true,
+  "overlay": false
 }
 
