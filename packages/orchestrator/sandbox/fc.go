@@ -28,6 +28,8 @@ type FcVM struct {
 	id string
 
 	env *SandboxFiles
+
+	fcClient *client.FirecrackerAPI
 }
 
 // The envd will use these information for logging
@@ -223,7 +225,7 @@ func (fc *FcVM) startVM(
 	}
 	telemetry.ReportEvent(childCtx, "vm started")
 
-	err = client.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
+	fcClient, err := client.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("wait for fc socket failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -231,6 +233,7 @@ func (fc *FcVM) startVM(
 	}
 	telemetry.ReportEvent(childCtx, "fc process created socket")
 
+	fc.fcClient = fcClient
 	err = fc.loadSnapshot(childCtx, tracer)
 	if err != nil {
 		fc.stopVM(childCtx, tracer)
@@ -258,9 +261,9 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 		attribute.String("instance.snapshot.root_path", fc.env.EnvDirPath()),
 	))
 	defer childSpan.End()
-
-	fcClient := client.NewFirecrackerAPI(fc.env.SocketPath)
-	telemetry.ReportEvent(childCtx, "created FC socket client")
+	if fc.fcClient == nil {
+		return fmt.Errorf("fc client has not been initialized, call WaitForSocket() first")
+	}
 
 	snapshotLoadParams := fc.env.getSnapshotLoadParams()
 	snapshotConfig := operations.LoadSnapshotParams{
@@ -268,7 +271,7 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 		Body:    &snapshotLoadParams,
 	}
 
-	_, err := fcClient.Operations.LoadSnapshot(&snapshotConfig)
+	_, err := fc.fcClient.Operations.LoadSnapshot(&snapshotConfig)
 	if err != nil {
 		telemetry.ReportCriticalError(childCtx, err)
 		return err
@@ -280,7 +283,7 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 		Body:    fc.metadata,
 	}
 
-	_, err = fcClient.Operations.PutMmds(&mmdsConfig)
+	_, err = fc.fcClient.Operations.PutMmds(&mmdsConfig)
 	if err != nil {
 		telemetry.ReportCriticalError(childCtx, err)
 		return err

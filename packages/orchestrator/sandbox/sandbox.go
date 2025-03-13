@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	waitSocketTimeout = 5 * time.Second
+	waitSocketTimeout = 10 * time.Second
 )
 
 // Default MaxIdleConns is 100.
