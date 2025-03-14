@@ -296,22 +296,6 @@ func (env *SandboxFiles) Cleanup(
 		telemetry.ReportEvent(childCtx, "removed socket")
 	}
 
-	// NOTE(huang-jl): maybe process has not been clean completely by kernel,
-	// so retry rm cgroup dir for 3 times
-	for i := 0; i < 3; i++ {
-		if err := syscall.Rmdir(env.CgroupPath()); err == nil {
-			break
-		}
-		time.Sleep(time.Duration(20*(i+1)) * time.Millisecond)
-	}
-	if err != nil {
-		errMsg := fmt.Errorf("error remove cgroup path: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		finalErr = errors.Join(finalErr, errMsg)
-	} else {
-		telemetry.ReportEvent(childCtx, "removed cgroup path")
-	}
-
 	err = os.Remove(env.PrometheusTargetPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error prometheus target path: %w", err)
@@ -319,6 +303,28 @@ func (env *SandboxFiles) Cleanup(
 		finalErr = errors.Join(finalErr, errMsg)
 	} else {
 		telemetry.ReportEvent(childCtx, "removed prometheus target path")
+	}
+
+	// NOTE(huang-jl): maybe process has not been clean completely by kernel, so:
+	// (1) retry rm cgroup dir for 3 times
+	// (2) make remove cgroup at final step.
+	sleepTimes := [3]time.Duration{
+		200 * time.Millisecond,
+		500 * time.Millisecond,
+		1500 * time.Millisecond,
+	}
+	for _, sleepTime := range sleepTimes {
+		if err = syscall.Rmdir(env.CgroupPath()); err == nil {
+			break
+		}
+		time.Sleep(sleepTime)
+	}
+	if err != nil {
+		errMsg := fmt.Errorf("error remove cgroup path: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		finalErr = errors.Join(finalErr, errMsg)
+	} else {
+		telemetry.ReportEvent(childCtx, "removed cgroup path")
 	}
 
 	return finalErr

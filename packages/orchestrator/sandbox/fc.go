@@ -3,10 +3,13 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
@@ -255,6 +258,42 @@ func (fc *FcVM) startVM(
 	return nil
 }
 
+func retryHttpRequest(ctx context.Context, httpReqFunc func() error, maxRetryTimes int) (int, error) {
+	var err error
+	retryTimes := 0
+	retryInterval := 50 * time.Millisecond
+	timer := time.NewTimer(retryInterval)
+	// we will retry when encounter errors
+	for {
+		err = httpReqFunc()
+		if err == nil {
+			return retryTimes, nil
+		}
+		// we only retry with EOF error
+		if e := (&url.Error{}); errors.As(err, &e) {
+			if errors.Is(e.Err, io.EOF) {
+				goto cont
+			}
+		}
+		return retryTimes, err
+		// first check context
+	cont:
+		select {
+		case <-ctx.Done():
+			return retryTimes, ctx.Err()
+		case <-timer.C:
+			if retryInterval < time.Second {
+				retryInterval *= 2
+			}
+			timer.Reset(retryInterval)
+		}
+		retryTimes += 1
+		if retryTimes > maxRetryTimes {
+			return retryTimes, fmt.Errorf("reach max retry times, last error: %w", err)
+		}
+	}
+}
+
 func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "load-snapshot", trace.WithAttributes(
 		attribute.String("instance.socket.path", fc.env.SocketPath),
@@ -271,25 +310,33 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 		Body:    &snapshotLoadParams,
 	}
 
-	_, err := fc.fcClient.Operations.LoadSnapshot(&snapshotConfig)
+	// retry for 3 times
+	retryTimes, err := retryHttpRequest(childCtx, func() error {
+		_, err := fc.fcClient.Operations.LoadSnapshot(&snapshotConfig)
+		return err
+	}, 3)
 	if err != nil {
 		telemetry.ReportCriticalError(childCtx, err)
 		return err
 	}
-	telemetry.ReportEvent(childCtx, "snapshot loaded")
+	telemetry.ReportEvent(childCtx, "snapshot loaded", attribute.Int("retry_times", retryTimes))
 
 	mmdsConfig := operations.PutMmdsParams{
 		Context: childCtx,
 		Body:    fc.metadata,
 	}
 
-	_, err = fc.fcClient.Operations.PutMmds(&mmdsConfig)
+	// retry for 3 times
+	retryTimes, err = retryHttpRequest(childCtx, func() error {
+		_, err = fc.fcClient.Operations.PutMmds(&mmdsConfig)
+		return err
+	}, 3)
 	if err != nil {
 		telemetry.ReportCriticalError(childCtx, err)
 		return err
 	}
 
-	telemetry.ReportEvent(childCtx, "mmds data set")
+	telemetry.ReportEvent(childCtx, "mmds data set", attribute.Int("retry_times", retryTimes))
 
 	return nil
 }
