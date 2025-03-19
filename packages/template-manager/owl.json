@@ -1,0 +1,14 @@
+{
+  "template": "default-owl",
+  "startCmd": ". /home/user/venv/bin/activate && python examples/run_server.py",
+  "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
+  "memMB": 6144,
+  "vcpu": 2,
+  "diskMB": 5120,
+  "kernelVersion": "5.10.226",
+  "hugePages": false,
+  "dockerImg": "jialianghuang/default-owl:latest",
+  "noPull": true,
+  "overlay": false,
+  "startCmdWorkingDirectory": "/home/user/owl"
+}

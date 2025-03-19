@@ -21,3 +21,8 @@ build-default:
 build-agent:
 	docker build -t jialianghuang/default-agent:latest \
 		--network host  -f agent.Dockerfile .
+
+.PHONY: build-owl
+build-owl:
+	docker build -t jialianghuang/default-owl:latest \
+		--network host  -f owl.Dockerfile .

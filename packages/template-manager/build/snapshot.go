@@ -43,6 +43,7 @@ type Snapshot struct {
 	socketPath string
 }
 
+// This function will initialize s.client
 func (s *Snapshot) startFcVM(
 	ctx context.Context,
 	tracer trace.Tracer,
@@ -152,7 +153,7 @@ func (s *Snapshot) startFcVM(
 	}()
 
 	// Wait for the FC process to start so we can use FC API
-	err = client.WaitForSocket(childCtx, tracer, s.socketPath, socketWaitTimeout)
+	s.client, err = client.WaitForSocket(childCtx, tracer, s.socketPath, socketWaitTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
 
@@ -456,11 +457,9 @@ func NewSnapshot(ctx context.Context, tracer trace.Tracer, env *Env, network *Fc
 	defer childSpan.End()
 
 	fcSocketPath := env.getSocketPath()
-	client := client.NewFirecrackerAPI(fcSocketPath)
 
 	snapshot := &Snapshot{
 		socketPath: fcSocketPath,
-		client:     client,
 		env:        env,
 		fc:         nil,
 	}

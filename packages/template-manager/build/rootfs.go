@@ -126,6 +126,12 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	var err error
 	var scriptDef bytes.Buffer
 
+	// we only pass constants.StartCmdEnvFilePath
+	// when user specify a startCmdEnvFilePath in its config json
+	startCmdEnvFilePath := ""
+	if len(r.env.StartCmdEnvFilePath) > 0 {
+		startCmdEnvFilePath = constants.StartCmdEnvFilePath
+	}
 	err = EnvInstanceTemplate.Execute(&scriptDef, struct {
 		EnvID                    string
 		StartCmd                 string
@@ -134,7 +140,7 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	}{
 		EnvID:                    r.env.EnvID,
 		StartCmd:                 strings.ReplaceAll(r.env.StartCmd, "\"", "\\\""),
-		StartCmdEnvFilePath:      constants.StartCmdEnvFilePath,
+		StartCmdEnvFilePath:      startCmdEnvFilePath,
 		StartCmdWorkingDirectory: r.env.StartCmdWorkingDirectory,
 	})
 	if err != nil {
