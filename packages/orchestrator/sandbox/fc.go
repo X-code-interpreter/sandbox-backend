@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -30,7 +32,8 @@ type FcVM struct {
 
 	id string
 
-	env *SandboxFiles
+	env                *SandboxFiles
+	enableDiffSnapshot bool
 
 	fcClient *client.FirecrackerAPI
 }
@@ -49,6 +52,7 @@ func newFCVM(
 	ctx context.Context,
 	tracer trace.Tracer,
 	sandboxID string,
+	enableDiffSnapshot bool,
 	env *SandboxFiles,
 	fcNet *FcNetwork,
 	traceID string,
@@ -109,12 +113,13 @@ func newFCVM(
 	logCollectorAddr := fmt.Sprintf("http://%s:%d", fcNet.VethIP(), consts.DefaultLogCollectorPort)
 
 	vm := &FcVM{
-		cmd:    cmd,
-		stdout: cmdStdoutReader,
-		stderr: cmdStderrReader,
-		ctx:    vmmCtx,
-		id:     sandboxID,
-		env:    env,
+		cmd:                cmd,
+		stdout:             cmdStdoutReader,
+		stderr:             cmdStderrReader,
+		ctx:                vmmCtx,
+		id:                 sandboxID,
+		enableDiffSnapshot: enableDiffSnapshot,
+		env:                env,
 		metadata: &MmdsMetadata{
 			SandboxID: sandboxID,
 			EnvID:     env.EnvID,
@@ -304,7 +309,7 @@ func (fc *FcVM) loadSnapshot(ctx context.Context, tracer trace.Tracer) error {
 		return fmt.Errorf("fc client has not been initialized, call WaitForSocket() first")
 	}
 
-	snapshotLoadParams := fc.env.getSnapshotLoadParams()
+	snapshotLoadParams := fc.getSnapshotLoadParams()
 	snapshotConfig := operations.LoadSnapshotParams{
 		Context: childCtx,
 		Body:    &snapshotLoadParams,
@@ -369,4 +374,120 @@ func (fc *FcVM) wait() error {
 		return fmt.Errorf("fc has not started")
 	}
 	return fc.cmd.Wait()
+}
+
+// create snaphot of the running vm
+//
+// @terminate: true to kill the vm, false to resume the vm after generating snapshot
+func (fc *FcVM) snapshot(ctx context.Context, tracer trace.Tracer) error {
+	snapshotDir := fc.env.EnvInstanceCreateSnapshotPath()
+	childCtx, childSpan := tracer.Start(ctx, "create-snapshot", trace.WithAttributes(
+		attribute.String("instance.snapshot_dir", snapshotDir),
+	))
+	defer childSpan.End()
+
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		errMsg := fmt.Errorf("failed to create instance snapshot directory: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return errMsg
+	}
+
+	if err := fc.pause(childCtx, tracer); err != nil {
+		// no need to report error again
+		return err
+	}
+	createSnapshotParam := fc.getCreateSnapshotParams()
+	params := operations.CreateSnapshotParams{
+		Context: childCtx,
+		Body:    &createSnapshotParam,
+	}
+	_, err := fc.fcClient.Operations.CreateSnapshot(&params)
+	if err != nil {
+		errMsg := fmt.Errorf("error creating vm snapshot: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "created vm snapshot")
+
+	return nil
+}
+
+func (fc *FcVM) pause(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "pause-vm")
+	defer childSpan.End()
+	state := models.VMStatePaused
+	pauseConfig := operations.PatchVMParams{
+		Context: childCtx,
+		Body: &models.VM{
+			State: &state,
+		},
+	}
+
+	_, err := fc.fcClient.Operations.PatchVM(&pauseConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error pausing vm: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "fc vm paused")
+
+	return nil
+}
+
+func (fc *FcVM) resume(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "resume-vm")
+	defer childSpan.End()
+	state := models.VMStateResumed
+	resumeConfig := operations.PatchVMParams{
+		Context: childCtx,
+		Body: &models.VM{
+			State: &state,
+		},
+	}
+
+	_, err := fc.fcClient.Operations.PatchVM(&resumeConfig)
+	if err != nil {
+		errMsg := fmt.Errorf("error resuming vm: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+
+		return errMsg
+	}
+
+	telemetry.ReportEvent(childCtx, "fc vm resumed")
+
+	return nil
+}
+
+func (fc *FcVM) getSnapshotLoadParams() models.SnapshotLoadParams {
+	membackendType := models.MemoryBackendBackendTypeFile
+	membackendPath := fc.env.EnvMemfilePath()
+	snapshotPath := fc.env.EnvSnapfilePath()
+	return models.SnapshotLoadParams{
+		MemBackend: &models.MemoryBackend{
+			BackendPath: &membackendPath,
+			BackendType: &membackendType,
+		},
+		SnapshotPath:        &snapshotPath,
+		ResumeVM:            true,
+		EnableDiffSnapshots: fc.enableDiffSnapshot,
+	}
+}
+
+func (fc *FcVM) getCreateSnapshotParams() models.SnapshotCreateParams {
+	snapshotType := models.SnapshotCreateParamsSnapshotTypeFull
+	if fc.enableDiffSnapshot {
+		snapshotType = models.SnapshotCreateParamsSnapshotTypeDiff
+	}
+
+	memfilePath := fc.env.EnvInstanceCreateSnapshotMemfilePath()
+	snapfilePath := fc.env.EnvInstanceCreateSnapshotSnapfilePath()
+	return models.SnapshotCreateParams{
+		MemFilePath:  &memfilePath,
+		SnapshotPath: &snapfilePath,
+		SnapshotType: snapshotType,
+	}
 }

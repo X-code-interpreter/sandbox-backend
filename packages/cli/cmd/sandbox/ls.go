@@ -1,4 +1,4 @@
-package cmd
+package sandbox
 
 import (
 	"context"
@@ -10,23 +10,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// lsCmd represents the ls command
-var lsCmd = &cobra.Command{
-	Use:   "ls [-a | -aa] sandbox IDs ...",
-	Short: "list sandbox and its information",
-	Long: `list sandbox and its information, for example:
+func NewListCommand() *cobra.Command {
+	// lsCmd represents the ls command
+	lsCmd := &cobra.Command{
+		Use:   "ls [-a | -aa] sandbox IDs ...",
+		Short: "list sandbox and its information",
+		Long: `list sandbox and its information, for example:
   sandbox-cli sandbox ls -a
   sandbox-cli sandbox ls --orphan
+  # set the ip address and port of the orchestrator
   sandbox-cli sandbox ls --ip 127.0.0.1 --port 5000 SandboxID-1
   sandbox-cli sandbox ls -i 192.168.47.247 -p 6666 SandboxID-1 SandboxID-2
 `,
-	SilenceUsage: true,
-	RunE:         lsSandbox,
-}
-
-func init() {
-	sandboxCmd.AddCommand(lsCmd)
-
+		SilenceUsage: true,
+		RunE:         lsSandbox,
+	}
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
@@ -37,7 +35,8 @@ func init() {
 	// is called directly, e.g.:
 	// lsCmd.Flags().CountP("all", "a", "list all sandboxes (By default only 20). If you want show all, please specify more than one 'a' (e.g., -aa)")
 	lsCmd.Flags().BoolP("all", "a", false, "list all sandboxes (excluding orphan).")
-	lsCmd.Flags().Bool("orphan", false, "list orphan sandboxes, by default only list sandboxes maintained by orchestrator.")
+	lsCmd.Flags().Bool("orphan", false, "list orphan sandboxes. if not set this flag, only list sandboxes maintained by orchestrator.")
+	return lsCmd
 }
 
 func lsAll(ip string, port int) error {
@@ -80,7 +79,7 @@ func lsSubset(ip string, port int, sandboxIDs ...string) error {
 	sandboxes := make([]*orchestrator.SandboxInfo, 0)
 	ctx := context.Background()
 	for _, sandboxID := range sandboxIDs {
-		req := orchestrator.SandboxRequest{SandboxID: sandboxID}
+		req := orchestrator.SandboxSearchRequest{SandboxID: sandboxID}
 		sbx, err := client.Search(ctx, &req)
 		if err != nil {
 			slog.Error("sandbox search encounter error", slog.String("sandbox-id", sandboxID))

@@ -17,11 +17,14 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
 	waitSocketTimeout = 10 * time.Second
 )
+
+var InvalidSandboxState = errors.New("invalid sandbox state")
 
 // Default MaxIdleConns is 100.
 // Default IdleConnTimeout is 90 seconds.
@@ -30,6 +33,7 @@ var httpClient = http.Client{
 }
 
 type Sandbox struct {
+	mu      sync.Mutex
 	fc      *FcVM
 	Env     *SandboxFiles
 	Network *FcNetwork
@@ -52,7 +56,7 @@ func NewSandbox(
 ) (*Sandbox, error) {
 	childCtx, childSpan := tracer.Start(
 		ctx,
-		"new-sandbox",
+		"sandbox-new",
 		trace.WithAttributes(attribute.String("sandbox.id", config.SandboxID)),
 	)
 	defer childSpan.End()
@@ -122,6 +126,7 @@ func NewSandbox(
 		childCtx,
 		tracer,
 		config.SandboxID,
+		config.EnableDiffSnapshots,
 		fsEnv,
 		fcNet,
 		childSpan.SpanContext().TraceID().String(),
@@ -152,7 +157,7 @@ func NewSandbox(
 	go func() {
 		bgCtx, span := tracer.Start(
 			trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(childCtx)),
-			"new-sandbox-bg-task",
+			"sandbox-bg-task",
 			trace.WithAttributes(
 				attribute.String("sandbox.id", sbx.SandboxID()),
 			),
@@ -237,12 +242,29 @@ func (s *Sandbox) cleanupAfterFCStop(
 	tracer trace.Tracer,
 	dns *DNS,
 ) error {
-	childCtx, childSpan := tracer.Start(ctx, "delete-sandbox")
+	var (
+		err      error
+		finalErr error
+	)
+	childCtx, childSpan := tracer.Start(ctx, "sandbox-delete")
 	defer childSpan.End()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	var finalErr error
+	if s.State != orchestrator.SandboxState_STOP {
+		// even this is weird, we still cleanup this fc vm
+		// so do not return here
+		err = InvalidSandboxState
+		errMsg := fmt.Errorf("error during cleanup: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg,
+			attribute.String("state", s.State.String()),
+			attribute.String("sandbox.id", s.SandboxID()),
+		)
+		finalErr = errors.Join(finalErr, err)
+	}
+	s.State = orchestrator.SandboxState_CLEANNING
 
-	err := s.Network.Cleanup(childCtx, tracer, dns)
+	err = s.Network.Cleanup(childCtx, tracer, dns)
 	if err != nil {
 		errMsg := fmt.Errorf("cannot remove network when destroying task: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -264,9 +286,65 @@ func (s *Sandbox) cleanupAfterFCStop(
 }
 
 func (s *Sandbox) Stop(ctx context.Context, tracer trace.Tracer) error {
-	childCtx, childSpan := tracer.Start(ctx, "stop-sandbox")
+	childCtx, childSpan := tracer.Start(ctx, "sandbox-stop")
 	defer childSpan.End()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// despite the state is weird, we still stop the VM
+	if s.State != orchestrator.SandboxState_RUNNING {
+		err := InvalidSandboxState
+		errMsg := fmt.Errorf("error during stop: %w", err)
+		telemetry.ReportError(childCtx, errMsg,
+			attribute.String("state", s.State.String()),
+			attribute.String("sandbox.id", s.SandboxID()),
+		)
+	}
+	// mark the sandbox as KILLING (but the actual delete is in the
+	// wait-sandbox goroutine, see Create())
+	s.State = orchestrator.SandboxState_STOP
 	return s.fc.stopVM(childCtx, tracer)
+}
+
+// create snaphot of the running vm
+//
+// @terminate: true to kill the vm, false to resume the vm after generating snapshot
+func (s *Sandbox) CreateSnapshot(ctx context.Context, tracer trace.Tracer, terminate bool) error {
+	childCtx, childSpan := tracer.Start(ctx, "sandbox-create-snapshot")
+	defer childSpan.End()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State != orchestrator.SandboxState_RUNNING {
+		err := InvalidSandboxState
+		errMsg := fmt.Errorf("error during create snapshot: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg,
+			attribute.String("state", s.State.String()),
+			attribute.String("sandbox.id", s.SandboxID()),
+		)
+		return err
+	}
+	s.State = orchestrator.SandboxState_SNAPSHOTTING
+	if err := s.fc.snapshot(childCtx, tracer); err != nil {
+		s.State = orchestrator.SandboxState_INVALID
+		return err
+	}
+
+	if terminate {
+		if err := s.fc.stopVM(childCtx, tracer); err != nil {
+			// no need to report error again
+			s.State = orchestrator.SandboxState_INVALID
+			return err
+		}
+		s.State = orchestrator.SandboxState_STOP
+	} else {
+		// resume
+		if err := s.fc.resume(childCtx, tracer); err != nil {
+			// no need to report error again
+			s.State = orchestrator.SandboxState_INVALID
+			return err
+		}
+		s.State = orchestrator.SandboxState_RUNNING
+	}
+	return nil
 }
 
 // Wait for the sandbox process has been exited and also
@@ -329,6 +407,26 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 	return nil
 }
 
-func (s *Sandbox) GetPid() uint32 {
+func (s *Sandbox) getPid() uint32 {
 	return uint32(s.fc.cmd.Process.Pid)
+}
+
+func (s *Sandbox) GetSandboxInfo() orchestrator.SandboxInfo {
+	// This is a read only function. Thus, we do not get lock here.
+	// Or else, it might conflict with other function (e.g., cleanup).
+	sbxPid := s.getPid()
+	sbxFcNetworkIdx := s.Network.FcNetworkIdx()
+	sbxPrivateIp := s.Network.HostClonedIP()
+	sbxDiffSnapshot := s.fc.enableDiffSnapshot
+	return orchestrator.SandboxInfo{
+		SandboxID:           s.SandboxID(),
+		Pid:                 &sbxPid,
+		TemplateID:          &s.Env.EnvID,
+		KernelVersion:       &s.Env.KernelVersion,
+		FcNetworkIdx:        &sbxFcNetworkIdx,
+		PrivateIP:           &sbxPrivateIp,
+		EnableDiffSnapshots: &sbxDiffSnapshot,
+		StartTime:           timestamppb.New(s.StartAt),
+		State:               s.State,
+	}
 }

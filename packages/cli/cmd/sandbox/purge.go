@@ -1,4 +1,4 @@
-package cmd
+package sandbox
 
 import (
 	"context"
@@ -10,20 +10,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// purgeCmd represents the purge command
-var purgeCmd = &cobra.Command{
-	Use:   "purge pid",
-	Short: "purge the resource related with a sandbox",
-	Long: `In some cases, the orchestrator has crashed but the sandbox (i.e., VM)
+func NewPurgeCommand() *cobra.Command {
+	// purgeCmd represents the purge command
+	purgeCmd := &cobra.Command{
+		Use:   "purge pid",
+		Short: "purge the resource related with a sandbox",
+		Long: `In some cases, the orchestrator has crashed but the sandbox (i.e., VM)
   has not been cleanup correctly. This command is used in this scenario. It will
   purges the process, its network resource and the environment. Pass the pid of
   the sandbox (e.g., the process whose cmdline start with 'unshare')`,
-	RunE: purgeSandbox,
-}
-
-func init() {
-	sandboxCmd.AddCommand(purgeCmd)
-
+		RunE: purgeSandbox,
+	}
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
@@ -33,6 +30,7 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	purgeCmd.Flags().BoolP("all", "a", false, "Purges all orphan sandboxes")
+	return purgeCmd
 }
 
 func purgeSandbox(cmd *cobra.Command, args []string) error {

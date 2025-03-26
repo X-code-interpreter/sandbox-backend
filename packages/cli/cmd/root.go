@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/cli/cmd/cgroup"
+	"github.com/X-code-interpreter/sandbox-backend/packages/cli/cmd/sandbox"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +29,7 @@ var rootCmd = &cobra.Command{
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
+		slog.Error(err.Error())
 		os.Exit(1)
 	}
 }
@@ -39,19 +43,24 @@ func init() {
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
-	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v",
+	rootCmd.PersistentFlags().CountVarP(&verbosity, "verbose", "v",
 		"the internal log level to print (e.g., -v will print WARNING, -vv will print INFO, -vvv will print DEBUG)",
+	)
+	rootCmd.AddCommand(
+		sandbox.NewSandboxCommand(),
+		cgroup.NewCgroupCommand(),
 	)
 }
 
 func setupLogger(verbose int) {
+	fmt.Printf("set logger with verbose %d\n", verbose)
 	var level slog.LevelVar
-	switch verbose {
-	case 1:
+	switch {
+	case verbose == 1:
 		level.Set(slog.LevelWarn)
-	case 2:
+	case verbose == 2:
 		level.Set(slog.LevelInfo)
-	case 3:
+	case verbose >= 3:
 		level.Set(slog.LevelDebug)
 	default:
 		level.Set(slog.LevelError)

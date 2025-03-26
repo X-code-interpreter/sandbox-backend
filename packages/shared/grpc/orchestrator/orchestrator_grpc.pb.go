@@ -24,6 +24,7 @@ const (
 	Sandbox_List_FullMethodName     = "/Sandbox/List"
 	Sandbox_Delete_FullMethodName   = "/Sandbox/Delete"
 	Sandbox_Deactive_FullMethodName = "/Sandbox/Deactive"
+	Sandbox_Snapshot_FullMethodName = "/Sandbox/Snapshot"
 	Sandbox_Search_FullMethodName   = "/Sandbox/Search"
 	Sandbox_Purge_FullMethodName    = "/Sandbox/Purge"
 )
@@ -39,11 +40,13 @@ type SandboxClient interface {
 	// List is a gRPC service that returns a list of all the sandboxes.
 	List(ctx context.Context, in *SandboxListRequest, opts ...grpc.CallOption) (*SandboxListResponse, error)
 	// Delete is a gRPC service that kills a sandbox.
-	Delete(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	Delete(ctx context.Context, in *SandboxDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Invoke memory reclaim for a sandbox **on host**.
-	Deactive(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	Deactive(ctx context.Context, in *SandboxDeactivateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Snapshot a sandbox with id
+	Snapshot(ctx context.Context, in *SandboxSnapshotRequest, opts ...grpc.CallOption) (*SandboxSnapshotResponse, error)
 	// search a sandbox with id
-	Search(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*SandboxSearchResponse, error)
+	Search(ctx context.Context, in *SandboxSearchRequest, opts ...grpc.CallOption) (*SandboxSearchResponse, error)
 	// Purge will be invoked in rare case. typically when orchestrator crashes
 	// and forget to cleanup the sandbox. So the client can call this method
 	// to purge the orphan sandbox manually
@@ -78,7 +81,7 @@ func (c *sandboxClient) List(ctx context.Context, in *SandboxListRequest, opts .
 	return out, nil
 }
 
-func (c *sandboxClient) Delete(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *sandboxClient) Delete(ctx context.Context, in *SandboxDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, Sandbox_Delete_FullMethodName, in, out, cOpts...)
@@ -88,7 +91,7 @@ func (c *sandboxClient) Delete(ctx context.Context, in *SandboxRequest, opts ...
 	return out, nil
 }
 
-func (c *sandboxClient) Deactive(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *sandboxClient) Deactive(ctx context.Context, in *SandboxDeactivateRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, Sandbox_Deactive_FullMethodName, in, out, cOpts...)
@@ -98,7 +101,17 @@ func (c *sandboxClient) Deactive(ctx context.Context, in *SandboxRequest, opts .
 	return out, nil
 }
 
-func (c *sandboxClient) Search(ctx context.Context, in *SandboxRequest, opts ...grpc.CallOption) (*SandboxSearchResponse, error) {
+func (c *sandboxClient) Snapshot(ctx context.Context, in *SandboxSnapshotRequest, opts ...grpc.CallOption) (*SandboxSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SandboxSnapshotResponse)
+	err := c.cc.Invoke(ctx, Sandbox_Snapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sandboxClient) Search(ctx context.Context, in *SandboxSearchRequest, opts ...grpc.CallOption) (*SandboxSearchResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SandboxSearchResponse)
 	err := c.cc.Invoke(ctx, Sandbox_Search_FullMethodName, in, out, cOpts...)
@@ -129,11 +142,13 @@ type SandboxServer interface {
 	// List is a gRPC service that returns a list of all the sandboxes.
 	List(context.Context, *SandboxListRequest) (*SandboxListResponse, error)
 	// Delete is a gRPC service that kills a sandbox.
-	Delete(context.Context, *SandboxRequest) (*emptypb.Empty, error)
+	Delete(context.Context, *SandboxDeleteRequest) (*emptypb.Empty, error)
 	// Invoke memory reclaim for a sandbox **on host**.
-	Deactive(context.Context, *SandboxRequest) (*emptypb.Empty, error)
+	Deactive(context.Context, *SandboxDeactivateRequest) (*emptypb.Empty, error)
+	// Snapshot a sandbox with id
+	Snapshot(context.Context, *SandboxSnapshotRequest) (*SandboxSnapshotResponse, error)
 	// search a sandbox with id
-	Search(context.Context, *SandboxRequest) (*SandboxSearchResponse, error)
+	Search(context.Context, *SandboxSearchRequest) (*SandboxSearchResponse, error)
 	// Purge will be invoked in rare case. typically when orchestrator crashes
 	// and forget to cleanup the sandbox. So the client can call this method
 	// to purge the orphan sandbox manually
@@ -154,13 +169,16 @@ func (UnimplementedSandboxServer) Create(context.Context, *SandboxCreateRequest)
 func (UnimplementedSandboxServer) List(context.Context, *SandboxListRequest) (*SandboxListResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method List not implemented")
 }
-func (UnimplementedSandboxServer) Delete(context.Context, *SandboxRequest) (*emptypb.Empty, error) {
+func (UnimplementedSandboxServer) Delete(context.Context, *SandboxDeleteRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
 }
-func (UnimplementedSandboxServer) Deactive(context.Context, *SandboxRequest) (*emptypb.Empty, error) {
+func (UnimplementedSandboxServer) Deactive(context.Context, *SandboxDeactivateRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Deactive not implemented")
 }
-func (UnimplementedSandboxServer) Search(context.Context, *SandboxRequest) (*SandboxSearchResponse, error) {
+func (UnimplementedSandboxServer) Snapshot(context.Context, *SandboxSnapshotRequest) (*SandboxSnapshotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Snapshot not implemented")
+}
+func (UnimplementedSandboxServer) Search(context.Context, *SandboxSearchRequest) (*SandboxSearchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Search not implemented")
 }
 func (UnimplementedSandboxServer) Purge(context.Context, *SandboxPurgeRequest) (*SandboxPurgeResponse, error) {
@@ -224,7 +242,7 @@ func _Sandbox_List_Handler(srv interface{}, ctx context.Context, dec func(interf
 }
 
 func _Sandbox_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxRequest)
+	in := new(SandboxDeleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -236,13 +254,13 @@ func _Sandbox_Delete_Handler(srv interface{}, ctx context.Context, dec func(inte
 		FullMethod: Sandbox_Delete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxServer).Delete(ctx, req.(*SandboxRequest))
+		return srv.(SandboxServer).Delete(ctx, req.(*SandboxDeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _Sandbox_Deactive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxRequest)
+	in := new(SandboxDeactivateRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -254,13 +272,31 @@ func _Sandbox_Deactive_Handler(srv interface{}, ctx context.Context, dec func(in
 		FullMethod: Sandbox_Deactive_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxServer).Deactive(ctx, req.(*SandboxRequest))
+		return srv.(SandboxServer).Deactive(ctx, req.(*SandboxDeactivateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Sandbox_Snapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SandboxSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SandboxServer).Snapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Sandbox_Snapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SandboxServer).Snapshot(ctx, req.(*SandboxSnapshotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _Sandbox_Search_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SandboxRequest)
+	in := new(SandboxSearchRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -272,7 +308,7 @@ func _Sandbox_Search_Handler(srv interface{}, ctx context.Context, dec func(inte
 		FullMethod: Sandbox_Search_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxServer).Search(ctx, req.(*SandboxRequest))
+		return srv.(SandboxServer).Search(ctx, req.(*SandboxSearchRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -317,6 +353,10 @@ var Sandbox_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Deactive",
 			Handler:    _Sandbox_Deactive_Handler,
+		},
+		{
+			MethodName: "Snapshot",
+			Handler:    _Sandbox_Snapshot_Handler,
 		},
 		{
 			MethodName: "Search",

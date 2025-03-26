@@ -10,15 +10,18 @@ message SandboxConfig {
   // Maximum length of the instance in Hours
   int64 maxInstanceLength = 3;
   string sandboxID = 4;
-  map<string, string> metadata = 5;
+  bool enableDiffSnapshots = 5;
+  map<string, string> metadata = 6;
 }
 
 enum SandboxState {
   UNSPECIFY = 0;
   INVALID = 1;
   RUNNING = 2;
-  KILLING = 3;
-  ORPHAN = 4;
+  STOP = 3;
+  CLEANNING = 4;
+  SNAPSHOTTING = 5;
+  ORPHAN = 6;
 }
 
 // Information returned by List() or Search()
@@ -30,19 +33,19 @@ message SandboxInfo {
   optional int64 fcNetworkIdx = 5;
   optional string privateIP = 6;
   optional google.protobuf.Timestamp startTime = 7;
-  SandboxState state = 8;
-  map<string, string> metadata = 9;
+  optional bool enableDiffSnapshots = 8;
+  SandboxState state = 9;
+  map<string, string> metadata = 10;
 }
 
+// ================= Create ================= //
 // Data required for creating a new sandbox.
 message SandboxCreateRequest { SandboxConfig sandbox = 1; }
 
 // Data about the sandbox.
 message SandboxCreateResponse { SandboxInfo info = 1; }
 
-// Data required for action on a specified sandbox.
-message SandboxRequest { string sandboxID = 1; }
-
+// ================= List ================= //
 message SandboxListRequest {
   // List only orphan sandbox (which not maintained by orchestrator currently)
   // e.g., previous orchestrator has crashed and left some sandbox.
@@ -54,8 +57,29 @@ message SandboxListRequest {
 // Data returned after listing all the sandboxes.
 message SandboxListResponse { repeated SandboxInfo sandboxes = 1; }
 
+// ================= Delete ================= //
+message SandboxDeleteRequest { string sandboxID = 1; }
+
+// ================= Deactivate ================= //
+message SandboxDeactivateRequest { string sandboxID = 1; }
+
+// ================= Search ================= //
+message SandboxSearchRequest { string sandboxID = 1; }
 message SandboxSearchResponse { optional SandboxInfo sandbox = 1; }
 
+// ================= Snapshot ================= //
+message SandboxSnapshotRequest {
+  string sandboxID = 1;
+  // Whether to delete the sandbox after snapshotting.
+  bool delete = 2;
+}
+message SandboxSnapshotResponse {
+  // the path where contains the snapshot files.
+  string path = 1;
+}
+
+// ================= Purge ================= //
+// See note of rpc Purge below
 message SandboxPurgeRequest {
   // purge all orphan sandboxes, when specify this option
   // the sandboxIDs will be omitted.
@@ -75,13 +99,15 @@ service Sandbox {
   // List is a gRPC service that returns a list of all the sandboxes.
   rpc List(SandboxListRequest) returns (SandboxListResponse);
   // Delete is a gRPC service that kills a sandbox.
-  rpc Delete(SandboxRequest) returns (google.protobuf.Empty);
+  rpc Delete(SandboxDeleteRequest) returns (google.protobuf.Empty);
   // Invoke memory reclaim for a sandbox **on host**.
-  rpc Deactive(SandboxRequest) returns (google.protobuf.Empty);
+  rpc Deactive(SandboxDeactivateRequest) returns (google.protobuf.Empty);
   // TODO(huang-jl): Active interface (which needs modification to FC)
 
+  // Snapshot a sandbox with id
+  rpc Snapshot(SandboxSnapshotRequest) returns (SandboxSnapshotResponse);
   // search a sandbox with id
-  rpc Search(SandboxRequest) returns (SandboxSearchResponse);
+  rpc Search(SandboxSearchRequest) returns (SandboxSearchResponse);
   // Purge will be invoked in rare case. typically when orchestrator crashes
   // and forget to cleanup the sandbox. So the client can call this method
   // to purge the orphan sandbox manually

@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
@@ -25,8 +24,10 @@ import (
 
 var _ orchestrator.SandboxServer = (*server)(nil)
 
+var SandboxNotFound = errors.New("sandbox not found")
+
 func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-create")
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-create")
 	defer childSpan.End()
 	childSpan.SetAttributes(
 		attribute.String("env.id", req.Sandbox.TemplateID),
@@ -85,25 +86,14 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	s.InsertSandbox(sbx)
 	s.metric.AddSandbox(childCtx, sbx)
 
-	sbxPid := sbx.GetPid()
-	sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
-	sbxPrivateIp := sbx.Network.HostClonedIP()
+	sbxInfo := sbx.GetSandboxInfo()
 	return &orchestrator.SandboxCreateResponse{
-		Info: &orchestrator.SandboxInfo{
-			SandboxID:     sbx.SandboxID(),
-			Pid:           &sbxPid,
-			TemplateID:    &sbx.Env.EnvID,
-			KernelVersion: &sbx.Env.KernelVersion,
-			FcNetworkIdx:  &sbxFcNetworkIdx,
-			PrivateIP:     &sbxPrivateIp,
-			StartTime:     timestamppb.New(sbx.StartAt),
-			State:         sbx.State,
-		},
+		Info: &sbxInfo,
 	}, nil
 }
 
 func (s *server) List(ctx context.Context, req *orchestrator.SandboxListRequest) (*orchestrator.SandboxListResponse, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-list")
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-list")
 	defer childSpan.End()
 
 	var (
@@ -190,19 +180,8 @@ func (s *server) list(_ context.Context, running bool) (*orchestrator.SandboxLis
 		if running && sbx.State != orchestrator.SandboxState_RUNNING {
 			continue
 		}
-		sbxPid := sbx.GetPid()
-		sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
-		sbxPrivateIp := sbx.Network.HostClonedIP()
-		results = append(results, &orchestrator.SandboxInfo{
-			SandboxID:     sbx.SandboxID(),
-			Pid:           &sbxPid,
-			TemplateID:    &sbx.Env.EnvID,
-			KernelVersion: &sbx.Env.KernelVersion,
-			FcNetworkIdx:  &sbxFcNetworkIdx,
-			PrivateIP:     &sbxPrivateIp,
-			StartTime:     timestamppb.New(sbx.StartAt),
-			State:         sbx.State,
-		})
+		sbxInfo := sbx.GetSandboxInfo()
+		results = append(results, &sbxInfo)
 	}
 	s.mu.Unlock()
 
@@ -212,8 +191,8 @@ func (s *server) list(_ context.Context, running bool) (*orchestrator.SandboxLis
 }
 
 // Delete is a gRPC service that kills a sandbox.
-func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxRequest) (*empty.Empty, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-delete", trace.WithAttributes(
+func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxDeleteRequest) (*empty.Empty, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-delete", trace.WithAttributes(
 		attribute.String("sandbox.id", req.SandboxID),
 	))
 	defer childSpan.End()
@@ -225,9 +204,6 @@ func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxRequest) (
 
 		return nil, status.New(codes.NotFound, errMsg.Error()).Err()
 	}
-	// mark the sandbox as KILLING (but the actual delete is in the
-	// wait-sandbox goroutine, see Create())
-	sbx.State = orchestrator.SandboxState_KILLING
 
 	err := sbx.Stop(childCtx, s.tracer)
 	if err != nil {
@@ -241,17 +217,17 @@ func (s *server) Delete(ctx context.Context, req *orchestrator.SandboxRequest) (
 	return &empty.Empty{}, nil
 }
 
-func (s *server) Deactive(ctx context.Context, req *orchestrator.SandboxRequest) (*empty.Empty, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-delete", trace.WithAttributes(
+func (s *server) Deactive(ctx context.Context, req *orchestrator.SandboxDeactivateRequest) (*empty.Empty, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-deactive", trace.WithAttributes(
 		attribute.String("sandbox.id", req.SandboxID),
 	))
 	defer childSpan.End()
 	sbx, ok := s.GetSandbox(req.SandboxID)
 	if !ok {
-		errMsg := fmt.Errorf("sandbox not found")
-		telemetry.ReportError(childCtx, errMsg)
+		err := SandboxNotFound
+		telemetry.ReportError(childCtx, err)
 
-		return nil, status.New(codes.NotFound, errMsg.Error()).Err()
+		return nil, status.New(codes.NotFound, err.Error()).Err()
 	}
 
 	// 1. first get host mem consumption
@@ -267,7 +243,7 @@ func (s *server) Deactive(ctx context.Context, req *orchestrator.SandboxRequest)
 
 	// 2. deactive the sandbox
 	start := time.Now()
-	if err := sbx.Deactive(childCtx); err != nil {
+	if err := sbx.Deactive(childCtx, s.tracer); err != nil {
 		errMsg := fmt.Errorf("deactive sandbox failed: %w", err)
 		return nil, status.New(codes.Internal, errMsg.Error()).Err()
 	}
@@ -290,8 +266,8 @@ func (s *server) Deactive(ctx context.Context, req *orchestrator.SandboxRequest)
 	return &empty.Empty{}, nil
 }
 
-func (s *server) Search(ctx context.Context, req *orchestrator.SandboxRequest) (*orchestrator.SandboxSearchResponse, error) {
-	_, childSpan := s.tracer.Start(ctx, "sandbox-search", trace.WithAttributes(
+func (s *server) Search(ctx context.Context, req *orchestrator.SandboxSearchRequest) (*orchestrator.SandboxSearchResponse, error) {
+	_, childSpan := s.tracer.Start(ctx, "grpc-search", trace.WithAttributes(
 		attribute.String("sandbox.id", req.SandboxID),
 	))
 	defer childSpan.End()
@@ -303,25 +279,14 @@ func (s *server) Search(ctx context.Context, req *orchestrator.SandboxRequest) (
 			Sandbox: nil,
 		}, nil
 	}
-	sbxPid := sbx.GetPid()
-	sbxFcNetworkIdx := sbx.Network.FcNetworkIdx()
-	sbxPrivateIp := sbx.Network.HostClonedIP()
+	sbxInfo := sbx.GetSandboxInfo()
 	return &orchestrator.SandboxSearchResponse{
-		Sandbox: &orchestrator.SandboxInfo{
-			SandboxID:     sbx.SandboxID(),
-			Pid:           &sbxPid,
-			TemplateID:    &sbx.Env.EnvID,
-			KernelVersion: &sbx.Env.KernelVersion,
-			FcNetworkIdx:  &sbxFcNetworkIdx,
-			PrivateIP:     &sbxPrivateIp,
-			State:         sbx.State,
-			StartTime:     timestamppb.New(sbx.StartAt),
-		},
+		Sandbox: &sbxInfo,
 	}, nil
 }
 
 func (s *server) Purge(ctx context.Context, req *orchestrator.SandboxPurgeRequest) (*orchestrator.SandboxPurgeResponse, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "sandbox-purge", trace.WithAttributes(
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-purge", trace.WithAttributes(
 		attribute.Bool("purge-all", req.PurgeAll),
 		attribute.StringSlice("sandbox-ids", req.SandboxIDs),
 	))
@@ -360,4 +325,31 @@ func (s *server) Purge(ctx context.Context, req *orchestrator.SandboxPurgeReques
 			Msg:     "",
 		}, nil
 	}
+}
+
+func (s *server) Snapshot(ctx context.Context, req *orchestrator.SandboxSnapshotRequest) (*orchestrator.SandboxSnapshotResponse, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-snapshot", trace.WithAttributes(
+		attribute.String("sandbox.id", req.SandboxID),
+	))
+	defer childSpan.End()
+
+	// NOTE(huang-jl): Do not find in Search() is not considering as error
+	sbx, ok := s.GetSandbox(req.SandboxID)
+	if !ok {
+		err := SandboxNotFound
+		telemetry.ReportError(childCtx, err)
+
+		return nil, status.New(codes.NotFound, err.Error()).Err()
+	}
+
+	if err := sbx.CreateSnapshot(childCtx, s.tracer, req.Delete); err != nil {
+		errMsg := fmt.Errorf("create snapshot failed: %w", err)
+		telemetry.ReportError(childCtx, errMsg)
+
+		return nil, status.New(codes.Internal, errMsg.Error()).Err()
+	}
+
+	return &orchestrator.SandboxSnapshotResponse{
+		Path: sbx.Env.EnvInstanceCreateSnapshotPath(),
+	}, nil
 }

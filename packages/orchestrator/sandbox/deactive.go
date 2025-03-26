@@ -9,15 +9,30 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Deactive will try to demote the memory of a sandbox to lower-level
 // (e.g., disk via swap).
 //
-// NOTE(huang-jl): The ctx already contains a span
 // TODO(huang-jl): use multigen lru (which requires Host Kernel version >= 6.1)
-func (s *Sandbox) Deactive(ctx context.Context) error {
+func (s *Sandbox) Deactive(ctx context.Context, tracer trace.Tracer) error {
+	childCtx, childSpan := tracer.Start(ctx, "sandbox-deactive")
+	defer childSpan.End()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State != orchestrator.SandboxState_RUNNING {
+		err := InvalidSandboxState
+		errMsg := fmt.Errorf("error during deactive: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg,
+			attribute.String("state", s.State.String()),
+			attribute.String("sandbox.id", s.SandboxID()),
+		)
+		return err
+	}
 	cgroupPath := s.Env.CgroupPath()
 	// Since (*os.File).Write method will handle EAGAIN internally
 	// so I choose to use syscall directly.

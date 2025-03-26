@@ -14,7 +14,6 @@ import (
 
 	"github.com/KarpelesLab/reflink"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -24,12 +23,10 @@ import (
 )
 
 const (
-	EnvInstancesDirName = "env-instances"
+	EnvInstancesDirName         = "env-instances"
+	EnvInstancesSnapshotDirName = "env-instances-snapshot"
 
 	socketWaitTimeout = 2 * time.Second
-
-	cgroupfsPath     = "/sys/fs/cgroup"
-	cgroupParentName = "code-interpreter"
 )
 
 func createDirIfNotExist(path string, perm fs.FileMode) error {
@@ -54,7 +51,7 @@ func init() {
 	}
 
 	// parent cgroup path
-	cgroupParentPath := filepath.Join(cgroupfsPath, cgroupParentName)
+	cgroupParentPath := filepath.Join(consts.CgroupfsPath, consts.CgroupParentName)
 	if err := createDirIfNotExist(cgroupParentPath, 0o755); err != nil {
 		panic(err)
 	}
@@ -183,11 +180,23 @@ func (env *SandboxFiles) EnvInstanceWritableRootfsPath() string {
 }
 
 func (env *SandboxFiles) CgroupPath() string {
-	return filepath.Join(cgroupfsPath, cgroupParentName, env.SandboxID)
+	return filepath.Join(consts.CgroupfsPath, consts.CgroupParentName, env.SandboxID)
 }
 
 func (env *SandboxFiles) PrometheusTargetPath() string {
 	return filepath.Join(constants.PrometheusTargetsPath, env.SandboxID+".json")
+}
+
+func (env *SandboxFiles) EnvInstanceCreateSnapshotPath() string {
+	return filepath.Join(env.EnvDirPath(), EnvInstancesSnapshotDirName, env.SandboxID)
+}
+
+func (env *SandboxFiles) EnvInstanceCreateSnapshotMemfilePath() string {
+	return filepath.Join(env.EnvInstanceCreateSnapshotPath(), consts.MemfileName)
+}
+
+func (env *SandboxFiles) EnvInstanceCreateSnapshotSnapfilePath() string {
+	return filepath.Join(env.EnvInstanceCreateSnapshotPath(), consts.SnapfileName)
 }
 
 func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error {
@@ -328,19 +337,4 @@ func (env *SandboxFiles) Cleanup(
 	}
 
 	return finalErr
-}
-
-func (env *SandboxFiles) getSnapshotLoadParams() models.SnapshotLoadParams {
-	membackendType := models.MemoryBackendBackendTypeFile
-	membackendPath := env.EnvMemfilePath()
-	snapshotPath := env.EnvSnapfilePath()
-	return models.SnapshotLoadParams{
-		MemBackend: &models.MemoryBackend{
-			BackendPath: &membackendPath,
-			BackendType: &membackendType,
-		},
-		SnapshotPath:        &snapshotPath,
-		ResumeVM:            true,
-		EnableDiffSnapshots: false,
-	}
 }

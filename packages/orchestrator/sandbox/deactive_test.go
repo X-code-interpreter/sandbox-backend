@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 )
 
 func TestCurrentFileParse(t *testing.T) {
 	// 1. first create a cgroup
-	cgroupPath := filepath.Join(cgroupfsPath, "test-current-file-parse")
+	cgroupPath := filepath.Join(consts.CgroupfsPath, "test-current-file-parse")
 	err := os.Mkdir(cgroupPath, 0o755)
 	if err != nil {
 		t.Fatalf("create cgroup failed: %s", err)
