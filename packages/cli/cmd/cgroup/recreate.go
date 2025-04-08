@@ -17,9 +17,10 @@ func NewRecreateCommand() *cobra.Command {
 	recreateCmd := &cobra.Command{
 		Use:   "recreate",
 		Short: "Recreate the cgroup of the sandbox",
+    SilenceUsage: true,
 		RunE:  recreate,
 	}
-	recreateCmd.Flags().String("--name", defaultCgroupPath, "The name of the cgroup to recreate.")
+	recreateCmd.Flags().String("name", defaultCgroupPath, "The name of the cgroup to recreate.")
 
 	return recreateCmd
 }

@@ -121,7 +121,7 @@ func deleteSbx(cmd *cobra.Command, args []string) error {
 	}
 
 	if err == nil {
-		fmt.Print("delete succeed!")
+		fmt.Println("delete succeed!")
 	}
 	return err
 }

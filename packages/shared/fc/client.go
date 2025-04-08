@@ -1,4 +1,6 @@
-package client
+package fc
+
+//go:generate go run github.com/go-swagger/go-swagger/cmd/swagger generate client -f ./firecracker.yaml
 
 import (
 	"context"
@@ -13,6 +15,7 @@ import (
 	"github.com/go-openapi/strfmt"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 )
 
 // NOTE(huang-jl): we should not use a single global transport as following:
@@ -43,8 +46,8 @@ import (
 // for socket path. A proper way to implement this is to manually keep a Transport
 // for each socket path (e.g., using a map[string]*http.Transport).
 
-func NewFirecrackerAPI(socketPath string) *FirecrackerAPI {
-	httpClient := NewHTTPClient(strfmt.NewFormats())
+func NewFirecrackerAPI(socketPath string) *client.FirecrackerAPI {
+	httpClient := client.NewHTTPClient(strfmt.NewFormats())
 
 	// create new Transport each time
 	// TODO(by huang-jl) as the above comment said:
@@ -60,7 +63,7 @@ func NewFirecrackerAPI(socketPath string) *FirecrackerAPI {
 		},
 	}
 
-	transport := httptransport.New(DefaultHost, DefaultBasePath, DefaultSchemes)
+	transport := httptransport.New(client.DefaultHost, client.DefaultBasePath, client.DefaultSchemes)
 	transport.Transport = socketTransport
 
 	httpClient.SetTransport(transport)
@@ -74,7 +77,7 @@ func WaitForSocket(
 	tracer trace.Tracer,
 	socketPath string,
 	timeout time.Duration,
-) (*FirecrackerAPI, error) {
+) (*client.FirecrackerAPI, error) {
 	childCtx, childSpan := tracer.Start(ctx, "wait-for-fc-socket")
 	childCtx, cancel := context.WithTimeout(childCtx, timeout)
 

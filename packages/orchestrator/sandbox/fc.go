@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
+	firecracker "github.com/X-code-interpreter/sandbox-backend/packages/shared/fc"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
@@ -233,7 +234,7 @@ func (fc *FcVM) startVM(
 	}
 	telemetry.ReportEvent(childCtx, "vm started")
 
-	fcClient, err := client.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
+	fcClient, err := firecracker.WaitForSocket(childCtx, tracer, fc.env.SocketPath, waitSocketTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("wait for fc socket failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)

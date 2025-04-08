@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
+	firecracker "github.com/X-code-interpreter/sandbox-backend/packages/shared/fc"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/models"
@@ -153,7 +154,7 @@ func (s *Snapshot) startFcVM(
 	}()
 
 	// Wait for the FC process to start so we can use FC API
-	s.client, err = client.WaitForSocket(childCtx, tracer, s.socketPath, socketWaitTimeout)
+	s.client, err = firecracker.WaitForSocket(childCtx, tracer, s.socketPath, socketWaitTimeout)
 	if err != nil {
 		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
 
