@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/build"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -27,26 +27,14 @@ func Fatalf(format string, a ...any) {
 }
 
 func validateEnv(env *build.Env) error {
-	if env.VCpuCount == 0 {
-		return fmt.Errorf("please set the vcpu in template file")
-	}
-	if env.MemoryMB == 0 {
-		return fmt.Errorf("please set the memMB in template file")
-	}
-
-	if env.DiskSizeMB == 0 {
-		return fmt.Errorf("please set the diskMB in template file")
-	}
-
 	if env.KernelVersion == "" {
 		env.KernelVersion = consts.DefaultKernelVersion
 	}
-
 	if env.FirecrackerBinaryPath == "" {
 		env.FirecrackerBinaryPath = "firecracker"
 	}
 
-	return nil
+	return env.VmTemplate.Validate()
 }
 
 // In original e2b, the template-manager is a server
@@ -76,7 +64,7 @@ func main() {
 	}
 	// init otel environment
 	ctx := context.Background()
-  // we disable metric for template-manager
+	// we disable metric for template-manager
 	shutdown, err := telemetry.InitConsoleOTel(ctx, "template-manager", false)
 	if err != nil {
 		Fatal("init console otel error: ", err)

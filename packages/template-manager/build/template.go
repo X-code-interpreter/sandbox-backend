@@ -9,15 +9,10 @@ import (
 	"path/filepath"
 	text_template "text/template"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel/trace"
-)
-
-const (
-	tmpSocketDir = "/tmp"
 )
 
 //go:embed provision.sh
@@ -29,14 +24,6 @@ type Env struct {
 
 	StartCmdEnvFilePath      string `json:"startCmdEnvFilePath,omitempty"`
 	StartCmdWorkingDirectory string `json:"startCmdWorkingDirectory,omitempty"`
-}
-
-func (e *Env) tmpMemfilePath() string {
-	return filepath.Join(e.TmpRunningPath(), consts.MemfileName)
-}
-
-func (e *Env) tmpSnapfilePath() string {
-	return filepath.Join(e.TmpRunningPath(), consts.SnapfileName)
 }
 
 // Dump the env (i.e., the configuration) to json file under [VmTemplate.EnvDirPath].
@@ -76,7 +63,7 @@ func (e *Env) initialize(ctx context.Context, tracer trace.Tracer) error {
 		}
 	}()
 
-	err = os.MkdirAll(e.TmpRunningPath(), 0o777)
+	err = os.MkdirAll(e.RunningPath(), 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error creating tmp build dir: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -92,7 +79,7 @@ func (e *Env) Cleanup(ctx context.Context, tracer trace.Tracer) {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup")
 	defer childSpan.End()
 
-	err := os.RemoveAll(e.TmpRunningPath())
+	err := os.RemoveAll(e.RunningPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error cleaning up env files: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -105,7 +92,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "move-to-env-dir")
 	defer childSpan.End()
 
-	err := os.Rename(e.tmpSnapfilePath(), e.EnvSnapfilePath())
+	err := os.Rename(e.TmpSnapfilePath(), e.EnvSnapfilePath())
 	if err != nil {
 		errMsg := fmt.Errorf("error moving snapshot file: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -115,7 +102,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 
 	telemetry.ReportEvent(childCtx, "moved snapshot file")
 
-	err = os.Rename(e.tmpMemfilePath(), e.EnvMemfilePath())
+	err = os.Rename(e.TmpMemfilePath(), e.EnvMemfilePath())
 	if err != nil {
 		errMsg := fmt.Errorf("error moving memfile: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -171,7 +158,7 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 		return errMsg
 	}
 
-	network, err := NewFcNetwork(childCtx, tracer, e)
+	network, err := NewNetworkEnvForSnapshot(childCtx, tracer, e)
 	if err != nil {
 		errMsg := fmt.Errorf("error network setup for FC while building env '%s' during build: %w", e.EnvID, err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -180,7 +167,7 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 	}
 
 	defer func() {
-		ntErr := network.Cleanup(childCtx, tracer)
+		ntErr := network.Cleanup(childCtx)
 		if ntErr != nil {
 			errMsg := fmt.Errorf("error removing network namespace: %w", ntErr)
 			telemetry.ReportError(childCtx, errMsg)
@@ -217,7 +204,7 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 }
 
 // api-socket of FC
-func (e *Env) getSocketPath() string {
+func (e *Env) GetSocketPath() string {
 	socketFileName := fmt.Sprintf("fc-build-sock-%s.sock", e.EnvID)
-	return filepath.Join(tmpSocketDir, socketFileName)
+	return filepath.Join(os.TempDir(), socketFileName)
 }

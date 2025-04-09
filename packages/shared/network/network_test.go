@@ -1,4 +1,4 @@
-package sandbox
+package network
 
 import (
 	"fmt"
@@ -16,11 +16,11 @@ func assert(t *testing.T, res bool) {
 }
 
 func TestFcNetwork(t *testing.T) {
-	nm := NewFcNetworkManager()
-	var fcNets []*FcNetwork
+	nm := NewNetworkManager()
+	var fcNets []*NetworkEnvInfo
 	for i := 0; i < 5000; i++ {
 		id := fmt.Sprintf("test-%d", i)
-		fcNet, err := nm.NewFcNetwork(id)
+		fcNet, err := nm.NewNetworkEnvInfo(id)
 		assert(t, err == nil)
 		fcNets = append(fcNets, fcNet)
 	}

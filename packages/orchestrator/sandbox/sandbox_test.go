@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"go.opentelemetry.io/otel"
 )
 
@@ -18,14 +19,14 @@ func TestEnd2End(t *testing.T) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 
-	dns, err := NewDNS()
-	nm := NewFcNetworkManager()
+	dns, err := network.NewDNS()
+	nm := network.NewNetworkManager()
 	if err != nil {
 		t.Fatal(err)
 	}
 	sandboxConfig := &orchestrator.SandboxConfig{
-		TemplateID:    "default-code-interpreter",
-		SandboxID:     "test-end-2-end",
+		TemplateID: "default-code-interpreter",
+		SandboxID:  "test-end-2-end",
 	}
 	sandbox, err := NewSandbox(ctx, tracer, dns, sandboxConfig, nm)
 	if err != nil {

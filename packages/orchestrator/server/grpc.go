@@ -140,7 +140,7 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 			continue
 		}
 		sandboxID := match[1]
-		fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
+		netEnvInfo, err := s.netManager.SearchNetworkEnvByID(ctx, s.tracer, sandboxID)
 		if err != nil {
 			// we find the sandbox but cannot get the fcNetwork
 			return nil, fmt.Errorf("cannot get fc network of orphan process: %w", err)
@@ -152,8 +152,8 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 		// for orphan sandbox, we only populate privateIP and sandboxID
 		// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
 		// latter purge. But purge is a low-frequent event, so it is fine.
-		sbxFcNetworkIdx := fcNetwork.FcNetworkIdx()
-		sbxPrivateIP := fcNetwork.HostClonedIP()
+		sbxFcNetworkIdx := netEnvInfo.NetworkEnvIdx()
+		sbxPrivateIP := netEnvInfo.HostClonedIP()
 		sbxPid := uint32(process.Pid)
 		results = append(results, &orchestrator.SandboxInfo{
 			SandboxID:    sandboxID,

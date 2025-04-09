@@ -154,7 +154,7 @@ func NewSandboxFiles(
 
 	span.SetAttributes(
 		attribute.String("instance.env_instance_path", s.EnvInstancePath()),
-		attribute.String("instance.running_path", s.TmpRunningPath()),
+		attribute.String("instance.running_path", s.RunningPath()),
 		attribute.String("instance.env_path", s.EnvDirPath()),
 		attribute.String("instance.kernel.mount_path", s.KernelMountPath()),
 		attribute.String("instance.kernel.path", s.KernelDirPath()),
@@ -216,7 +216,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 
 	telemetry.ReportEvent(childCtx, "env instance directory created")
 
-	err = os.MkdirAll(env.TmpRunningPath(), 0o777)
+	err = os.MkdirAll(env.RunningPath(), 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error making env running dir: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -278,7 +278,7 @@ func (env *SandboxFiles) Cleanup(
 	childCtx, childSpan := tracer.Start(ctx, "cleanup-env-instance",
 		trace.WithAttributes(
 			attribute.String("instance.env_instance_path", env.EnvInstancePath()),
-			attribute.String("instance.running_path", env.TmpRunningPath()),
+			attribute.String("instance.running_path", env.RunningPath()),
 			attribute.String("instance.env_path", env.EnvDirPath()),
 		),
 	)

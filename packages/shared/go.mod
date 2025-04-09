@@ -3,6 +3,7 @@ module github.com/X-code-interpreter/sandbox-backend/packages/shared
 go 1.21.0
 
 require (
+	github.com/coreos/go-iptables v0.8.0
 	github.com/go-openapi/errors v0.22.0
 	github.com/go-openapi/runtime v0.28.0
 	github.com/go-openapi/strfmt v0.23.0
@@ -10,6 +11,9 @@ require (
 	github.com/go-openapi/validate v0.24.0
 	github.com/go-swagger/go-swagger v0.31.0
 	github.com/oapi-codegen/oapi-codegen/v2 v2.4.1
+	github.com/txn2/txeh v1.5.5
+	github.com/vishvananda/netlink v1.3.0
+	github.com/vishvananda/netns v0.0.5
 	go.opentelemetry.io/otel v1.27.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.27.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.27.0

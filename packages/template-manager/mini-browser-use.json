@@ -1,0 +1,15 @@
+{
+  "template": "mini-browser-use",
+  "startCmd": ". /home/user/venv/bin/activate && python examples/server.py",
+  "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
+  "memMB": 4096,
+  "vcpu": 1,
+  "diskMB": 5120,
+  "kernelVersion": "5.10.226",
+  "hugePages": false,
+  "dockerImg": "jialianghuang/default-browser-use:latest",
+  "noPull": true,
+  "overlay": false,
+  "startCmdWorkingDirectory": "/home/user/browser-use",
+  "vmmType": "firecracker"
+}

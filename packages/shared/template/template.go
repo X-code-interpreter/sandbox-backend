@@ -1,10 +1,55 @@
 package template
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"path/filepath"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 )
+
+type VMMType string
+
+const (
+	FIRECRACKER     VMMType = "firecracker"
+	CLOUDHYPERVISOR VMMType = "cloud-hypervisor"
+)
+
+var (
+	InvalidVcpuCount  = errors.New("invalid vcpu count")
+	InvalidMemSize    = errors.New("invalid memory size")
+	InvalidDiskSize   = errors.New("invalid disk size")
+	InvalidKernelVer  = errors.New("invalid kernel version")
+	InvalidBinaryPath = errors.New("invalid binary path")
+	InvalidVmmType    = errors.New("invalid vmm type")
+)
+
+var VMMTypeUnmarshalErr = errors.New("invalid value for VMMType when unmashal")
+
+// MarshalJSON marshals the enum as a quoted json string
+func (t VMMType) MarshalJSON() ([]byte, error) {
+	buffer := bytes.NewBufferString(`"`)
+	buffer.WriteString(string(t))
+	buffer.WriteString(`"`)
+	return buffer.Bytes(), nil
+}
+
+// UnmarshalJSON unmashals a quoted json string to the enum value
+func (t *VMMType) UnmarshalJSON(b []byte) error {
+	var j string
+	err := json.Unmarshal(b, &j)
+	if err != nil {
+		return err
+	}
+	// Note that if the string cannot be found then it will be set to the zero value, 'Created' in this case.
+	if j == string(FIRECRACKER) || j == string(CLOUDHYPERVISOR) {
+		*t = VMMType(j)
+		return nil
+	}
+	return fmt.Errorf("%w %s", VMMTypeUnmarshalErr, j)
+}
 
 type VmTemplate struct {
 	// Unique ID of the env.
@@ -52,6 +97,8 @@ type VmTemplate struct {
 	// the other is writable upper dir.
 	// Set this to false (by default) will create one read-write block device.
 	Overlay bool `json:"overlay"`
+
+	VmmType VMMType `json:"vmmType"`
 }
 
 // Path to the directory where the env is stored.
@@ -86,18 +133,26 @@ func (t *VmTemplate) EnvSnapfilePath() string {
 // is that it is actually a bind mount in standalone mount namespace.
 // Thus, there can be multiple instance of tmpRunningPath (each in a
 // seperate mount ns).
-func (t *VmTemplate) TmpRunningPath() string {
+func (t *VmTemplate) RunningPath() string {
 	return filepath.Join(t.EnvDirPath(), "run")
+}
+
+func (t *VmTemplate) TmpMemfilePath() string {
+	return filepath.Join(t.RunningPath(), consts.MemfileName)
+}
+
+func (t *VmTemplate) TmpSnapfilePath() string {
+	return filepath.Join(t.RunningPath(), consts.SnapfileName)
 }
 
 // The running path where save the rootfs, see more about [VmTemplate.TmpRunningPath]
 func (t *VmTemplate) TmpRootfsPath() string {
-	return filepath.Join(t.TmpRunningPath(), consts.RootfsName)
+	return filepath.Join(t.RunningPath(), consts.RootfsName)
 }
 
 // The running path where save the writable rootfs, see more about [VmTemplate.TmpRunningPath]
 func (t *VmTemplate) TmpWritableRootfsPath() string {
-	return filepath.Join(t.TmpRunningPath(), consts.WritableFsName)
+	return filepath.Join(t.RunningPath(), consts.WritableFsName)
 }
 
 // The dir on the host where should keep the kernel vmlinux
@@ -121,6 +176,35 @@ func (t *VmTemplate) KernelMountPath() string {
 
 // The path of the template configuration file.
 // It is located in [VmTemplate.EnvDirPath]
-func (e *VmTemplate) TemplateFilePath() string {
-	return filepath.Join(e.EnvDirPath(), consts.TemplateFileName)
+func (t *VmTemplate) TemplateFilePath() string {
+	return filepath.Join(t.EnvDirPath(), consts.TemplateFileName)
+}
+
+func (t *VmTemplate) Validate() error {
+	if t.VCpuCount == 0 {
+		return InvalidVcpuCount
+	}
+	if t.MemoryMB == 0 {
+		return InvalidMemSize
+	}
+
+	if t.DiskSizeMB == 0 {
+		return InvalidDiskSize
+	}
+
+	if t.KernelVersion == "" {
+		return InvalidKernelVer
+	}
+
+	if t.FirecrackerBinaryPath == "" {
+		return InvalidBinaryPath
+	}
+
+	switch t.VmmType {
+	case FIRECRACKER:
+	case CLOUDHYPERVISOR:
+	default:
+		return InvalidVmmType
+	}
+	return nil
 }

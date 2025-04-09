@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 
 	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
@@ -32,8 +34,8 @@ type server struct {
 	orchestrator.UnsafeSandboxServer
 	mu         sync.Mutex
 	sandboxes  map[string]*sandbox.Sandbox
-	dns        *sandbox.DNS
-	netManager *sandbox.FcNetworkManager
+	dns        *network.DNS
+	netManager *network.NetworkManager
 	tracer     trace.Tracer
 	metric     *serverMetric
 }
@@ -53,7 +55,7 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 
 	logger.Info("Initializing orchestrator server")
 
-	dns, err := sandbox.NewDNS()
+	dns, err := network.NewDNS()
 	if err != nil {
 		return nil, nil, fmt.Errorf("new dns failed: %w", err)
 	}
@@ -66,7 +68,7 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 	s := server{
 		dns:        dns,
 		sandboxes:  make(map[string]*sandbox.Sandbox),
-		netManager: sandbox.NewFcNetworkManager(),
+		netManager: network.NewNetworkManager(),
 		tracer:     otel.Tracer(constants.ServiceName),
 		metric:     metric,
 	}
@@ -127,7 +129,7 @@ var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, 
 // This method will also make sure that there is at most one process matches the sandboxID.
 func getOrphanProcess(sandboxID string) (*process.Process, error) {
 	var res *process.Process
-	netNsName := sandbox.GetFcNetNsName(sandboxID)
+	netNsName := network.GetFcNetNsName(sandboxID)
 	processes, err := process.Processes()
 	if err != nil {
 		return res, fmt.Errorf("cannot get processes on orchestrator: %w", err)
@@ -169,57 +171,87 @@ func parseEnvIdFromOrphanProcess(proc *process.Process) (string, error) {
 }
 
 func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
-	fcNetwork, err := s.netManager.SearchFcNetworkByID(ctx, s.tracer, sandboxID)
-	if err != nil {
-		errMsg := fmt.Errorf("search fc network failed: %w", err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-		return errMsg
-	}
+	var finalErr error
 	// Similar to (*Sandbox).cleanupAfterFCStop()
 	// 1. kill process
-	telemetry.ReportEvent(ctx, "try to get orphan process", attribute.String("sandbox-id", sandboxID))
-	proc, err := getOrphanProcess(sandboxID)
-	if err != nil {
-		errMsg := fmt.Errorf("get orphan process failed: %w", err)
-		telemetry.ReportCriticalError(ctx, errMsg, attribute.String("sandbox-id", sandboxID))
-		return errMsg
-	}
-	telemetry.ReportEvent(ctx, "get orphan process", attribute.String("sandbox-id", sandboxID))
-	envID, err := parseEnvIdFromOrphanProcess(proc)
-	if err != nil {
-		errMsg := fmt.Errorf("get orphan process env id failed: %w", err)
-		telemetry.ReportCriticalError(ctx, errMsg, attribute.String("sandbox-id", sandboxID))
-		return errMsg
-	}
-	telemetry.ReportEvent(ctx, "get env id of orphan process", attribute.String("sandbox-id", sandboxID))
-	if err := proc.Kill(); err != nil {
-		errMsg := fmt.Errorf("error when killing sandbox process [pid: %d]: %w", proc.Pid, err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-		return errMsg
-	}
-	telemetry.ReportEvent(ctx, "kill orphan process", attribute.String("sandbox-id", sandboxID))
+	envID, err := func() (envID string, err error) {
+		telemetry.ReportEvent(ctx, "try to get orphan process", attribute.String("sandbox-id", sandboxID))
+		proc, err := getOrphanProcess(sandboxID)
+		if err != nil {
+			err = fmt.Errorf("get orphan process failed: %w", err)
+			telemetry.ReportCriticalError(ctx, err, attribute.String("sandbox-id", sandboxID))
+			return
+		}
+		telemetry.ReportEvent(ctx, "get orphan process", attribute.String("sandbox-id", sandboxID))
+		envID, err = parseEnvIdFromOrphanProcess(proc)
+		if err != nil {
+			err = fmt.Errorf("get orphan process env id failed: %w", err)
+			telemetry.ReportCriticalError(ctx, err, attribute.String("sandbox-id", sandboxID))
+			return
+		}
+		telemetry.ReportEvent(ctx, "get env id of orphan process", attribute.String("sandbox-id", sandboxID))
+		if err = proc.Kill(); err != nil {
+			err = fmt.Errorf("error when killing sandbox process [pid: %d]: %w", proc.Pid, err)
+			telemetry.ReportError(ctx, err, attribute.String("sandbox.id", sandboxID))
+			return
+		}
+		telemetry.ReportEvent(ctx, "kill orphan process", attribute.String("sandbox-id", sandboxID))
+		return
+	}()
+	finalErr = errors.Join(finalErr, err)
 
 	// 2. cleanup network
-	if err := fcNetwork.Cleanup(ctx, s.tracer, s.dns); err != nil {
-		errMsg := fmt.Errorf("cleanup fc network failed: %w", err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-		return errMsg
+	err = func() error {
+		var finalErr error
+		netEnvInfo, err := s.netManager.SearchNetworkEnvByID(ctx, s.tracer, sandboxID)
+		if err != nil {
+			err := fmt.Errorf("search fc network failed: %w", err)
+			telemetry.ReportError(ctx, err)
+			return err
+		}
+		if err := netEnvInfo.DeleteNetns(); err != nil {
+			telemetry.ReportError(ctx, err)
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := netEnvInfo.DeleteHostVethDev(); err != nil {
+			telemetry.ReportError(ctx, err)
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := netEnvInfo.DeleteHostIptables(); err != nil {
+			telemetry.ReportError(ctx, err)
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := netEnvInfo.DeleteHostRoute(); err != nil {
+			telemetry.ReportError(ctx, err)
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := netEnvInfo.DeleteDNSEntry(s.dns); err != nil {
+			telemetry.ReportError(ctx, err)
+			finalErr = errors.Join(finalErr, err)
+		}
+		return finalErr
+	}()
+	if err != nil {
+		finalErr = errors.Join(finalErr, err)
+	} else {
+		telemetry.ReportEvent(ctx, "cleanup network of orphan process", attribute.String("sandbox-id", sandboxID))
 	}
-	telemetry.ReportEvent(ctx, "cleanup network of orphan process", attribute.String("sandbox-id", sandboxID))
 
 	// 3. cleanup env
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
 	// so skip firecrackerBinaryPath args
-	env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "")
+	err = func() error {
+		env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "")
+		if err != nil {
+			return fmt.Errorf("new sandbox failed: %w", err)
+		}
+		return env.Cleanup(ctx, s.tracer)
+	}()
 	if err != nil {
-		errMsg := fmt.Errorf("new sandbox failed: %w", err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
+		telemetry.ReportError(ctx, err)
+		finalErr = errors.Join(finalErr, err)
+	} else {
+		telemetry.ReportEvent(ctx, "cleanup files of orphan process")
 	}
-	if err := env.Cleanup(ctx, s.tracer); err != nil {
-		errMsg := fmt.Errorf("cleanup sandbox file failed: %w", err)
-		telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sandboxID))
-		return errMsg
-	}
-	telemetry.ReportEvent(ctx, "cleanup files of orphan process", attribute.String("sandbox-id", sandboxID))
-	return nil
+	return finalErr
 }

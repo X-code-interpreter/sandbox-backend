@@ -9,13 +9,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client/operations"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	httptransport "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
 )
 
 // NOTE(huang-jl): we should not use a single global transport as following:
@@ -124,6 +124,7 @@ checkSocketCreation:
 			)
 			return fcClient, nil
 		}
+		reqTimer.Reset(interval)
 		select {
 		case <-childCtx.Done():
 			return nil, childCtx.Err()
@@ -131,7 +132,6 @@ checkSocketCreation:
 			if interval < time.Second {
 				interval *= 2
 			}
-			reqTimer.Reset(interval)
 		}
 		retryTimes += 1
 	}
