@@ -95,22 +95,22 @@ func (n *NetworkEnvInfo) VpeerCIDR() string {
 
 // The tap device addree
 func (n *NetworkEnvInfo) TapIP() string {
-	return consts.FcTapAddress
+	return consts.HostTapIpAddress
 }
 
 // The tap device addree
 func (n *NetworkEnvInfo) TapName() string {
-	return consts.FcTapName
+	return consts.HostTapName
 }
 
 // The tap device addree
 func (n *NetworkEnvInfo) TapCIDR() string {
-	return fmt.Sprintf("%s/%s", n.TapIP(), consts.FcTapMask)
+	return fmt.Sprintf("%s/%s", n.TapIP(), consts.HostTapIpMask)
 }
 
 // The ip address of the guest OS
 func (n *NetworkEnvInfo) GuestIP() string {
-	return consts.FcAddr
+	return consts.GuestNetIpAddr
 }
 
 // Difference instances of sandbox will have same ip address,

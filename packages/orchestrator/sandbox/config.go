@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +13,9 @@ import (
 
 	"github.com/KarpelesLab/reflink"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -29,30 +30,15 @@ const (
 	socketWaitTimeout = 2 * time.Second
 )
 
-func createDirIfNotExist(path string, perm fs.FileMode) error {
-	_, err := os.Stat(path)
-	if err == nil {
-		// already exist
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat for path (%s) failed: %w", path, err)
-	}
-	// not exist error
-	if err := os.Mkdir(path, perm); err != nil {
-		return fmt.Errorf("create dir (%s) with perm %O failed: %w", path, perm, err)
-	}
-	return nil
-}
-
 func init() {
 	// prometheus target path
-	if err := createDirIfNotExist(constants.PrometheusTargetsPath, 0o777); err != nil {
+	if err := utils.CreateDirAllIfNotExists(constants.PrometheusTargetsPath, 0o755); err != nil {
 		panic(err)
 	}
 
 	// parent cgroup path
 	cgroupParentPath := filepath.Join(consts.CgroupfsPath, consts.CgroupParentName)
-	if err := createDirIfNotExist(cgroupParentPath, 0o755); err != nil {
+	if err := utils.CreateDirAllIfNotExists(cgroupParentPath, 0o755); err != nil {
 		panic(err)
 	}
 	// enable all controllers in controllers into subtree_control
@@ -75,16 +61,17 @@ func init() {
 	}
 }
 
-// Represent a files related to a sandbox
-type SandboxFiles struct {
+type Config struct {
 	template.VmTemplate
 
 	SandboxID string
-
 	// The socket path for FC
-	SocketPath string
-
-	FirecrackerBinaryPath string
+	SocketPath           string
+	HypervisorBinaryPath string
+	// only needed for FC
+	EnableDiffSnapshot bool
+	MaxInstanceLength  int
+	Metadata           map[string]string
 }
 
 // waitForSocket waits for the given file to exist
@@ -113,101 +100,107 @@ func waitForSocket(socketPath string, timeout time.Duration) error {
 	}
 }
 
-func NewSandboxFiles(
+func NewSandboxConfig(
 	ctx context.Context,
-	sandboxID,
-	envID,
-	firecrackerBinaryPath string,
-) (*SandboxFiles, error) {
+	req *orchestrator.SandboxCreateRequest,
+) (*Config, error) {
 	var t template.VmTemplate
-	templateFilePath := filepath.Join(consts.EnvsDisk, envID, consts.TemplateFileName)
+	templateFilePath := filepath.Join(consts.EnvsDisk, req.TemplateID, consts.TemplateFileName)
+	telemetry.ReportEvent(ctx, "begin create sandbox config", attribute.String("template_path", templateFilePath))
 	vmTemplateFile, err := os.Open(templateFilePath)
 	if err != nil {
-		errMsg := fmt.Errorf("cannot open template file for envid %s: %w", envID, err)
+		errMsg := fmt.Errorf("cannot open template file: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 		return nil, errMsg
 	}
 	defer vmTemplateFile.Close()
 
 	if err = json.NewDecoder(vmTemplateFile).Decode(&t); err != nil {
-		errMsg := fmt.Errorf("cannot decode template file for envid %s: %w", envID, err)
+		errMsg := fmt.Errorf("cannot decode template file: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 		return nil, errMsg
 	}
 
 	// Assemble socket path
-	socketPath, sockErr := getSocketPath(sandboxID)
+	socketPath, sockErr := getSocketPath(req.SandboxID)
 	if sockErr != nil {
 		errMsg := fmt.Errorf("error getting socket path: %w", sockErr)
 		telemetry.ReportCriticalError(ctx, errMsg)
 		return nil, errMsg
 	}
 
-	s := &SandboxFiles{
-		VmTemplate:            t,
-		SandboxID:             sandboxID,
-		SocketPath:            socketPath,
-		FirecrackerBinaryPath: firecrackerBinaryPath,
+	var hypervisorPath string
+	if req.HypervisorBinaryPath == nil || len(*req.HypervisorBinaryPath) == 0 {
+		switch t.VmmType {
+		case template.FIRECRACKER:
+			hypervisorPath = constants.FcBinaryPath
+		case template.CLOUDHYPERVISOR:
+			hypervisorPath = constants.ChBinaryPath
+		}
+	} else {
+		hypervisorPath = *req.HypervisorBinaryPath
+	}
+
+	config := &Config{
+		VmTemplate:           t,
+		SandboxID:            req.SandboxID,
+		SocketPath:           socketPath,
+		EnableDiffSnapshot:   req.EnableDiffSnapshots,
+		MaxInstanceLength:    int(req.MaxInstanceLength),
+		Metadata:             req.Metadata,
+		HypervisorBinaryPath: hypervisorPath,
 	}
 
 	span := trace.SpanFromContext(ctx)
 
 	span.SetAttributes(
-		attribute.String("instance.env_instance_path", s.EnvInstancePath()),
-		attribute.String("instance.running_path", s.RunningPath()),
-		attribute.String("instance.env_path", s.EnvDirPath()),
-		attribute.String("instance.kernel.mount_path", s.KernelMountPath()),
-		attribute.String("instance.kernel.path", s.KernelDirPath()),
-		attribute.String("instance.firecracker.path", firecrackerBinaryPath),
-		attribute.String("instance.cgroup.path", s.CgroupPath()),
+		attribute.String("instance.env_instance_path", config.EnvInstancePath()),
+		attribute.String("instance.running_path", config.RunningPath()),
+		attribute.String("instance.env_path", config.EnvDirPath()),
+		attribute.String("instance.kernel.mount_path", config.KernelMountPath()),
+		attribute.String("instance.kernel.path", config.KernelDirPath()),
+		attribute.String("instance.hypervisor.path", config.HypervisorBinaryPath),
+		attribute.String("instance.cgroup.path", config.CgroupPath()),
 	)
 
-	return s, nil
+	return config, nil
 }
 
 // Different instance of same Env need has its own dir
 // this dir contains the (reflink) copy of the VM instance's rootfs.
-func (env *SandboxFiles) EnvInstancePath() string {
-	return filepath.Join(env.EnvDirPath(), EnvInstancesDirName, env.SandboxID)
+func (config *Config) EnvInstancePath() string {
+	return filepath.Join(config.EnvDirPath(), EnvInstancesDirName, config.SandboxID)
 }
 
-func (env *SandboxFiles) EnvInstanceRootfsPath() string {
-	return filepath.Join(env.EnvInstancePath(), consts.RootfsName)
+func (config *Config) EnvInstanceRootfsPath() string {
+	return filepath.Join(config.EnvInstancePath(), consts.RootfsName)
 }
 
-func (env *SandboxFiles) EnvInstanceWritableRootfsPath() string {
-	return filepath.Join(env.EnvInstancePath(), consts.WritableFsName)
+func (config *Config) EnvInstanceWritableRootfsPath() string {
+	return filepath.Join(config.EnvInstancePath(), consts.WritableFsName)
 }
 
-func (env *SandboxFiles) CgroupPath() string {
-	return filepath.Join(consts.CgroupfsPath, consts.CgroupParentName, env.SandboxID)
+func (config *Config) CgroupPath() string {
+	return filepath.Join(consts.CgroupfsPath, consts.CgroupParentName, config.SandboxID)
 }
 
-func (env *SandboxFiles) PrometheusTargetPath() string {
-	return filepath.Join(constants.PrometheusTargetsPath, env.SandboxID+".json")
+func (config *Config) PrometheusTargetPath() string {
+	return filepath.Join(constants.PrometheusTargetsPath, config.SandboxID+".json")
 }
 
-func (env *SandboxFiles) EnvInstanceCreateSnapshotPath() string {
-	return filepath.Join(env.EnvDirPath(), EnvInstancesSnapshotDirName, env.SandboxID)
+func (config *Config) EnvInstanceCreateSnapshotPath() string {
+	return filepath.Join(config.EnvDirPath(), EnvInstancesSnapshotDirName, config.SandboxID)
 }
 
-func (env *SandboxFiles) EnvInstanceCreateSnapshotMemfilePath() string {
-	return filepath.Join(env.EnvInstanceCreateSnapshotPath(), consts.MemfileName)
-}
-
-func (env *SandboxFiles) EnvInstanceCreateSnapshotSnapfilePath() string {
-	return filepath.Join(env.EnvInstanceCreateSnapshotPath(), consts.SnapfileName)
-}
-
-func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error {
+func (config *Config) Ensure(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "create-sandbox-files",
 		trace.WithAttributes(
-			attribute.String("env.id", env.EnvID),
-			attribute.String("sandbox.id", env.SandboxID),
+			attribute.String("env_id", config.EnvID),
+			attribute.String("sandbox_id", config.SandboxID),
 		),
 	)
 	defer childSpan.End()
-	err := os.MkdirAll(env.EnvInstancePath(), 0o777)
+	err := os.MkdirAll(config.EnvInstancePath(), 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error making env instance dir: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -216,7 +209,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 
 	telemetry.ReportEvent(childCtx, "env instance directory created")
 
-	err = os.MkdirAll(env.RunningPath(), 0o777)
+	err = os.MkdirAll(config.RunningPath(), 0o777)
 	if err != nil {
 		errMsg := fmt.Errorf("error making env running dir: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -225,7 +218,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 
 	telemetry.ReportEvent(childCtx, "sandbox running directory created")
 
-	err = os.Mkdir(env.CgroupPath(), 0o755)
+	err = os.Mkdir(config.CgroupPath(), 0o755)
 	if err != nil {
 		errMsg := fmt.Errorf("error making cgroup: %w", err)
 		telemetry.ReportError(childCtx, errMsg)
@@ -236,10 +229,10 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 
 	// NOTE(huang-jl): ext4 does not support reflink
 	// so we must use xfs
-	if env.Overlay {
+	if config.Overlay {
 		// 1. create reflink of writable rootfs file.
 		// 2. create a hard link to base read-only rootfs file.
-		err = reflink.Always(env.EnvWritableRootfsPath(), env.EnvInstanceWritableRootfsPath())
+		err = reflink.Always(config.EnvWritableRootfsPath(), config.EnvInstanceWritableRootfsPath())
 		if err != nil {
 			errMsg := fmt.Errorf("error creating writable reflinked rootfs: %w", err)
 			telemetry.ReportCriticalError(childCtx, errMsg)
@@ -249,7 +242,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 		telemetry.ReportEvent(childCtx, "reflink of writable image created")
 
 		// build a hard link to base rootfs
-		err = os.Link(env.EnvRootfsPath(), env.EnvInstanceRootfsPath())
+		err = os.Link(config.EnvRootfsPath(), config.EnvInstanceRootfsPath())
 		if err != nil {
 			errMsg := fmt.Errorf("error linking base rootfs: %w", err)
 			telemetry.ReportCriticalError(childCtx, errMsg)
@@ -258,7 +251,7 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 		}
 		telemetry.ReportEvent(childCtx, "hard-link of base image created")
 	} else {
-		err = reflink.Always(env.EnvRootfsPath(), env.EnvInstanceRootfsPath())
+		err = reflink.Always(config.EnvRootfsPath(), config.EnvInstanceRootfsPath())
 		if err != nil {
 			errMsg := fmt.Errorf("error creating writable reflinked rootfs: %w", err)
 			telemetry.ReportCriticalError(childCtx, errMsg)
@@ -271,21 +264,21 @@ func (env *SandboxFiles) Ensure(ctx context.Context, tracer trace.Tracer) error 
 	return nil
 }
 
-func (env *SandboxFiles) Cleanup(
+func (config *Config) Cleanup(
 	ctx context.Context,
 	tracer trace.Tracer,
 ) error {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup-env-instance",
 		trace.WithAttributes(
-			attribute.String("instance.env_instance_path", env.EnvInstancePath()),
-			attribute.String("instance.running_path", env.RunningPath()),
-			attribute.String("instance.env_path", env.EnvDirPath()),
+			attribute.String("instance.env_instance_path", config.EnvInstancePath()),
+			attribute.String("instance.running_path", config.RunningPath()),
+			attribute.String("instance.env_path", config.EnvDirPath()),
 		),
 	)
 	defer childSpan.End()
 	var finalErr error
 
-	err := os.RemoveAll(env.EnvInstancePath())
+	err := os.RemoveAll(config.EnvInstancePath())
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting env instance files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -296,7 +289,7 @@ func (env *SandboxFiles) Cleanup(
 	}
 
 	// Remove socket
-	err = os.Remove(env.SocketPath)
+	err = os.Remove(config.SocketPath)
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting socket: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -305,7 +298,7 @@ func (env *SandboxFiles) Cleanup(
 		telemetry.ReportEvent(childCtx, "removed socket")
 	}
 
-	err = os.Remove(env.PrometheusTargetPath())
+	err = os.Remove(config.PrometheusTargetPath())
 	if err != nil {
 		errMsg := fmt.Errorf("error prometheus target path: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -323,7 +316,7 @@ func (env *SandboxFiles) Cleanup(
 		1500 * time.Millisecond,
 	}
 	for _, sleepTime := range sleepTimes {
-		if err = syscall.Rmdir(env.CgroupPath()); err == nil {
+		if err = syscall.Rmdir(config.CgroupPath()); err == nil {
 			break
 		}
 		time.Sleep(sleepTime)

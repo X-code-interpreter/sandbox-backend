@@ -5,15 +5,6 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "https://github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator";
 
-message SandboxConfig {
-  string templateID = 1;
-  // Maximum length of the instance in Hours
-  int64 maxInstanceLength = 3;
-  string sandboxID = 4;
-  bool enableDiffSnapshots = 5;
-  map<string, string> metadata = 6;
-}
-
 enum SandboxState {
   UNSPECIFY = 0;
   INVALID = 1;
@@ -40,7 +31,15 @@ message SandboxInfo {
 
 // ================= Create ================= //
 // Data required for creating a new sandbox.
-message SandboxCreateRequest { SandboxConfig sandbox = 1; }
+message SandboxCreateRequest {
+  string templateID = 1;
+  // Maximum length of the instance in Hours
+  int64 maxInstanceLength = 3;
+  string sandboxID = 4;
+  bool enableDiffSnapshots = 5;
+  map<string, string> metadata = 6;
+  optional string hypervisorBinaryPath = 7;
+}
 
 // Data about the sandbox.
 message SandboxCreateResponse { SandboxInfo info = 1; }

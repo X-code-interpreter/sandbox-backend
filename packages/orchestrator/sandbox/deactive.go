@@ -33,7 +33,7 @@ func (s *Sandbox) Deactive(ctx context.Context, tracer trace.Tracer) error {
 		)
 		return err
 	}
-	cgroupPath := s.Env.CgroupPath()
+	cgroupPath := s.Config.CgroupPath()
 	// Since (*os.File).Write method will handle EAGAIN internally
 	// so I choose to use syscall directly.
 	reclaimTrigger, err := syscall.Open(filepath.Join(cgroupPath, "memory.reclaim"), syscall.O_WRONLY, 0)
@@ -80,7 +80,7 @@ func parseMemoryCurrentFile(f *os.File) (int64, error) {
 // Get the memory consumption from host, internally it query
 // memory.current file in the cgroup v2.
 func (s *Sandbox) HostMemConsumption() (int64, error) {
-	cgroupPath := s.Env.CgroupPath()
+	cgroupPath := s.Config.CgroupPath()
 	currentFile, err := os.Open(filepath.Join(cgroupPath, "memory.current"))
 	if err != nil {
 		return 0, fmt.Errorf("open memory.current failed: %w", err)

@@ -2,16 +2,17 @@ package utils
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"syscall"
 	"time"
 )
 
-func CreateDirAllIfNotExists(dir string) error {
+func CreateDirAllIfNotExists(dir string, perm fs.FileMode) error {
 	stat, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			err = os.MkdirAll(dir, 0o777)
+			err = os.MkdirAll(dir, perm)
 			return nil
 		}
 		return err

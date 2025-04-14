@@ -30,8 +30,8 @@ func validateEnv(env *build.Env) error {
 	if env.KernelVersion == "" {
 		env.KernelVersion = consts.DefaultKernelVersion
 	}
-	if env.FirecrackerBinaryPath == "" {
-		env.FirecrackerBinaryPath = "firecracker"
+	if env.HypervisorBinaryPath == "" {
+		env.HypervisorBinaryPath = "firecracker"
 	}
 
 	return env.VmTemplate.Validate()

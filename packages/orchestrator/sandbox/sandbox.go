@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
@@ -35,16 +34,10 @@ var httpClient = http.Client{
 	Timeout: 10 * time.Second,
 }
 
-type CreateConfig struct {
-	EnableDiffSnapshot bool
-	MaxInstanceLength  int
-	Metadata           map[string]string
-}
-
 type Sandbox struct {
 	mu         sync.Mutex
 	vmm        vmm
-	Env        *SandboxFiles
+	Config     *Config
 	NetEnvInfo *network.NetworkEnvInfo
 	StartAt    time.Time
 
@@ -53,8 +46,7 @@ type Sandbox struct {
 	waitRes   error
 	cleanRes  error
 
-	Config CreateConfig
-	State  orchestrator.SandboxState
+	State orchestrator.SandboxState
 }
 
 func setupNetEnv(
@@ -121,17 +113,17 @@ func NewSandbox(
 	ctx context.Context,
 	tracer trace.Tracer,
 	dns *network.DNS,
-	config *orchestrator.SandboxConfig,
+	req *orchestrator.SandboxCreateRequest,
 	nm *network.NetworkManager,
 ) (*Sandbox, error) {
 	childCtx, childSpan := tracer.Start(
 		ctx,
 		"sandbox-new",
-		trace.WithAttributes(attribute.String("sandbox.id", config.SandboxID)),
+		trace.WithAttributes(attribute.String("sandbox.id", req.SandboxID)),
 	)
 	defer childSpan.End()
 
-	netEnvInfo, err := nm.NewNetworkEnvInfo(config.SandboxID)
+	netEnvInfo, err := nm.NewNetworkEnvInfo(req.SandboxID)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create fc network: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -158,11 +150,9 @@ func NewSandbox(
 		return nil, errMsg
 	}
 
-	fsEnv, err := NewSandboxFiles(
+	config, err := NewSandboxConfig(
 		childCtx,
-		config.SandboxID,
-		config.TemplateID,
-		constants.FCBinaryPath,
+		req,
 	)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to assemble env files info for FC: %w", err)
@@ -172,7 +162,7 @@ func NewSandbox(
 	}
 	telemetry.ReportEvent(childCtx, "assembled env files info")
 
-	err = fsEnv.Ensure(childCtx, tracer)
+	err = config.Ensure(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create env for FC: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -182,7 +172,7 @@ func NewSandbox(
 
 	defer func() {
 		if err != nil {
-			envErr := fsEnv.Cleanup(childCtx, tracer)
+			envErr := config.Cleanup(childCtx, tracer)
 			if envErr != nil {
 				errMsg := fmt.Errorf("error deleting env after failed fc start: %w", err)
 				telemetry.ReportCriticalError(childCtx, errMsg)
@@ -195,29 +185,21 @@ func NewSandbox(
 	vmm, err := newVmm(
 		childCtx,
 		tracer,
-		config.SandboxID,
-		config.EnableDiffSnapshots,
-		fsEnv,
+		config,
 		netEnvInfo,
-		childSpan.SpanContext().TraceID().String(),
 	)
 	if err != nil {
-		errMsg := fmt.Errorf("failed to new fc vm: %w", err)
+		errMsg := fmt.Errorf("failed to create vmm: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return nil, errMsg
 	}
 
 	sbx := &Sandbox{
 		vmm:        vmm,
-		Env:        fsEnv,
+		Config:     config,
 		NetEnvInfo: netEnvInfo,
 		StartAt:    time.Now(),
 		State:      orchestrator.SandboxState_RUNNING,
-		Config: CreateConfig{
-			EnableDiffSnapshot: config.EnableDiffSnapshots,
-			MaxInstanceLength:  int(config.MaxInstanceLength),
-			Metadata:           config.Metadata,
-		},
 	}
 
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
@@ -296,10 +278,9 @@ func (s *Sandbox) syncClock(ctx context.Context) error {
 func (s *Sandbox) CleanupAfterFCStop(
 	ctx context.Context,
 	tracer trace.Tracer,
-	dns *network.DNS,
 ) error {
 	s.cleanOnce.Do(func() {
-		s.cleanRes = s.cleanupAfterFCStop(ctx, tracer, dns)
+		s.cleanRes = s.cleanupAfterFCStop(ctx, tracer)
 	})
 	return s.cleanRes
 }
@@ -307,7 +288,6 @@ func (s *Sandbox) CleanupAfterFCStop(
 func (s *Sandbox) cleanupAfterFCStop(
 	ctx context.Context,
 	tracer trace.Tracer,
-	dns *network.DNS,
 ) error {
 	var (
 		err      error
@@ -344,7 +324,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 		}
 	}
 
-	err = s.Env.Cleanup(childCtx, tracer)
+	err = s.Config.Cleanup(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to delete sandbox files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -393,8 +373,8 @@ func (s *Sandbox) CreateSnapshot(ctx context.Context, tracer trace.Tracer, termi
 		return err
 	}
 	s.State = orchestrator.SandboxState_SNAPSHOTTING
-	snapshotDir := s.Env.EnvInstanceCreateSnapshotPath()
-	if err := utils.CreateDirAllIfNotExists(snapshotDir); err != nil {
+	snapshotDir := s.Config.EnvInstanceCreateSnapshotPath()
+	if err := utils.CreateDirAllIfNotExists(snapshotDir, 0o755); err != nil {
 		errMsg := fmt.Errorf("failed to create instance snapshot directory: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return errMsg
@@ -430,9 +410,9 @@ func (s *Sandbox) CreateSnapshot(ctx context.Context, tracer trace.Tracer, termi
 // wait for the cleanup has finished.
 //
 // This can be called multiple times.
-func (s *Sandbox) WaitAndCleanup(ctx context.Context, tracer trace.Tracer, dns *network.DNS) error {
+func (s *Sandbox) WaitAndCleanup(ctx context.Context, tracer trace.Tracer) error {
 	waitErr := s.Wait()
-	cleanErr := s.CleanupAfterFCStop(ctx, tracer, dns)
+	cleanErr := s.CleanupAfterFCStop(ctx, tracer)
 	return errors.Join(waitErr, cleanErr)
 }
 
@@ -446,7 +426,7 @@ func (s *Sandbox) Wait() error {
 }
 
 func (s *Sandbox) SandboxID() string {
-	return s.Env.SandboxID
+	return s.Config.SandboxID
 }
 
 // This will create a json file under sandbox's PrometheusTargetPath.
@@ -475,13 +455,13 @@ func (s *Sandbox) setupPrometheusTarget(ctx context.Context, tracer trace.Tracer
 			},
 		},
 	}
-	f, err := os.OpenFile(s.Env.PrometheusTargetPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
+	f, err := os.OpenFile(s.Config.PrometheusTargetPath(), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o666)
 	if err != nil {
-		return fmt.Errorf("open prometheus target file (%s) failed: %w", s.Env.PrometheusTargetPath(), err)
+		return fmt.Errorf("open prometheus target file (%s) failed: %w", s.Config.PrometheusTargetPath(), err)
 	}
 	defer f.Close()
 	if err := json.NewEncoder(f).Encode(config); err != nil {
-		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.Env.PrometheusTargetPath(), err)
+		return fmt.Errorf("write prometheus target file (%s) failed: %w", s.Config.PrometheusTargetPath(), err)
 	}
 	return nil
 }
@@ -500,8 +480,8 @@ func (s *Sandbox) GetSandboxInfo() orchestrator.SandboxInfo {
 	return orchestrator.SandboxInfo{
 		SandboxID:           s.SandboxID(),
 		Pid:                 &sbxPid,
-		TemplateID:          &s.Env.EnvID,
-		KernelVersion:       &s.Env.KernelVersion,
+		TemplateID:          &s.Config.EnvID,
+		KernelVersion:       &s.Config.KernelVersion,
 		FcNetworkIdx:        &sbxFcNetworkIdx,
 		PrivateIP:           &sbxPrivateIp,
 		EnableDiffSnapshots: &sbxDiffSnapshot,

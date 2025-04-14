@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	ToMBShift = 20
+	ToMBShift int64 = 20
 	// Max size of the rootfs file in MB.
 	maxRootfsSize = 15000 << ToMBShift
 	cacheTimeout  = "48h"
@@ -469,22 +469,10 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	telemetry.ReportEvent(childCtx, "converted container tar to ext4")
 
 	if r.env.Overlay {
-		if err = r.prepareWritableRootfs(childCtx, tracer); err != nil {
-			errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
-			telemetry.ReportCriticalError(childCtx, errMsg)
-
-			return errMsg
-		}
+		return r.createOverlayRootfsFile(childCtx, tracer, rootfsFile)
 	} else {
-		if err = r.createOneRootfs(childCtx, tracer, rootfsFile); err != nil {
-			errMsg := fmt.Errorf("error create one roofs file: %w", err)
-			telemetry.ReportCriticalError(childCtx, errMsg)
-
-			return errMsg
-		}
+		return r.createOneRootfs(childCtx, tracer, rootfsFile)
 	}
-
-	return nil
 }
 
 // Create single rootfs file for firecracker
@@ -509,6 +497,32 @@ func (r *Rootfs) createOneRootfs(ctx context.Context, tracer trace.Tracer, rootf
 	return nil
 }
 
+func (r *Rootfs) createOverlayRootfsFile(ctx context.Context, tracer trace.Tracer, rootfsFile *os.File) error {
+	// 1. make read-only rootfs align to pmem size requirements
+	fileSize, err := getFileSize(rootfsFile)
+	if err != nil {
+		telemetry.ReportCriticalError(ctx, err)
+		return err
+	}
+	targetFileSize := getAlignFileSizeForPmem(fileSize)
+	if fileSize != targetFileSize {
+		if err = resizeFsFile(ctx, rootfsFile, fileSize); err != nil {
+			errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
+			telemetry.ReportCriticalError(ctx, errMsg)
+		}
+	}
+	r.env.RootfsSize = targetFileSize
+
+	// 2. create the writable rootfs file
+	if err = r.prepareWritableRootfs(ctx, tracer); err != nil {
+		errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
+		telemetry.ReportCriticalError(ctx, errMsg)
+
+		return errMsg
+	}
+	return nil
+}
+
 // Create two files, one as read-only lower-layer with pre-installed package,
 // the other as (empty) writable layer. They will be mounted as overlayfs inside the firecracker.
 //
@@ -524,7 +538,8 @@ func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer)
 	}
 	defer writableRootfs.Close() // ignore error here
 
-	if err := writableRootfs.Truncate(r.env.DiskSizeMB << ToMBShift); err != nil {
+	targetSize := getAlignFileSizeForPmem(r.env.DiskSizeMB << ToMBShift)
+	if err := writableRootfs.Truncate(targetSize); err != nil {
 		errMsg := fmt.Errorf("error truncate writable rootfs file")
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return errMsg
@@ -561,38 +576,49 @@ func (r *Rootfs) resizeRootfs(ctx context.Context, tracer trace.Tracer, rootfsFi
 	resizeContext, resizeSpan := tracer.Start(ctx, "resize-rootfs-file-cmd")
 	defer resizeSpan.End()
 
-	rootfsStats, err := rootfsFile.Stat()
+	rootfsSize, err := getFileSize(rootfsFile)
 	if err != nil {
-		errMsg := fmt.Errorf("error statting rootfs file: %w", err)
+		telemetry.ReportCriticalError(resizeContext, err)
+		return err
+	}
+	// (For used as pmem file, we need align it to 2MB)
+	rootfsSize = getAlignFileSizeForPmem(rootfsSize + r.env.DiskSizeMB<<ToMBShift)
+	if err := resizeFsFile(resizeContext, rootfsFile, rootfsSize); err != nil {
+		errMsg := fmt.Errorf("error resize rootfs file: %w", err)
 		telemetry.ReportCriticalError(resizeContext, errMsg)
 
 		return errMsg
 	}
-
-	telemetry.ReportEvent(resizeContext, "statted rootfs file")
-
-	// In bytes
-	rootfsSize := rootfsStats.Size() + r.env.DiskSizeMB<<ToMBShift
-
 	r.env.RootfsSize = rootfsSize
+	telemetry.ReportEvent(resizeContext, "resized rootfs file", attribute.Int64("size", rootfsSize))
+	return nil
+}
 
-	err = rootfsFile.Truncate(rootfsSize)
-	if err != nil {
-		errMsg := fmt.Errorf("error truncating rootfs file: %w to size of build + defaultDiskSizeMB", err)
-		telemetry.ReportCriticalError(resizeContext, errMsg)
-
-		return errMsg
+func resizeFsFile(ctx context.Context, file *os.File, size int64) error {
+	if err := file.Truncate(size); err != nil {
+		return err
 	}
 
-	telemetry.ReportEvent(resizeContext, "truncated rootfs file to size of build + defaultDiskSizeMB")
+	cmd := exec.CommandContext(ctx, "resize2fs", file.Name())
 
-	cmd := exec.CommandContext(resizeContext, "resize2fs", r.env.TmpRootfsPath())
-
-	resizeStdoutWriter := telemetry.NewEventWriter(resizeContext, "stdout")
+	resizeStdoutWriter := telemetry.NewEventWriter(ctx, "stdout")
 	cmd.Stdout = resizeStdoutWriter
 
-	resizeStderrWriter := telemetry.NewEventWriter(resizeContext, "stderr")
+	resizeStderrWriter := telemetry.NewEventWriter(ctx, "stderr")
 	cmd.Stderr = resizeStderrWriter
 
 	return cmd.Run()
+}
+
+func getFileSize(file *os.File) (int64, error) {
+	rootfsStats, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get file size: %w", err)
+	}
+	return rootfsStats.Size(), nil
+}
+
+func getAlignFileSizeForPmem(size int64) int64 {
+	const mask int64 = (2 << ToMBShift) - 1
+	return (size + mask) & ^mask
 }

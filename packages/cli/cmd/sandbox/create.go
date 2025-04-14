@@ -60,14 +60,13 @@ func create(cmd *cobra.Command, args []string) error {
 	}
 
 	sandboxID := uuid.New()
-	sbxConfig := &orchestrator.SandboxConfig{
+	req := &orchestrator.SandboxCreateRequest{
 		TemplateID: template,
 		// NOTE(huang-jl): This has not been used for now
 		MaxInstanceLength:   3,
 		SandboxID:           sandboxID.String(),
 		EnableDiffSnapshots: enableDiffSnapshot,
 	}
-	req := &orchestrator.SandboxCreateRequest{Sandbox: sbxConfig}
 	ctx := context.Background()
 	_, err = client.Create(ctx, req)
 	if err != nil {

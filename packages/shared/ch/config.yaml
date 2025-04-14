@@ -1,0 +1,6 @@
+# config used for oapi-codegen
+package: ch
+generate:
+  client: true
+  models: true
+output: client.gen.go

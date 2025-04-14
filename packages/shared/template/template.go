@@ -22,7 +22,6 @@ var (
 	InvalidMemSize    = errors.New("invalid memory size")
 	InvalidDiskSize   = errors.New("invalid disk size")
 	InvalidKernelVer  = errors.New("invalid kernel version")
-	InvalidBinaryPath = errors.New("invalid binary path")
 	InvalidVmmType    = errors.New("invalid vmm type")
 )
 
@@ -60,10 +59,8 @@ type VmTemplate struct {
 	// optional (default: empty)
 	StartCmd string `json:"startCmd"`
 
-	// Path to the firecracker binary.
+	// Path to the hypervisor binary.
 	// optional (default: firecracker)
-	FirecrackerBinaryPath string `json:"fcPath"`
-
 	// The number of vCPUs to allocate to the VM.
 	// required
 	VCpuCount int64 `json:"vcpu"`
@@ -118,16 +115,6 @@ func (t *VmTemplate) EnvWritableRootfsPath() string {
 	return filepath.Join(t.EnvDirPath(), consts.WritableFsName)
 }
 
-// Path to the file where the snapshot memory file is store on host.
-func (t *VmTemplate) EnvMemfilePath() string {
-	return filepath.Join(t.EnvDirPath(), consts.MemfileName)
-}
-
-// Path to the file where the snapshot metadata is store on host.
-func (t *VmTemplate) EnvSnapfilePath() string {
-	return filepath.Join(t.EnvDirPath(), consts.SnapfileName)
-}
-
 // Path to the directory where contains the rootfs file.
 // It used as a temporary path. The difference between with envRootfsPath
 // is that it is actually a bind mount in standalone mount namespace.
@@ -135,14 +122,6 @@ func (t *VmTemplate) EnvSnapfilePath() string {
 // seperate mount ns).
 func (t *VmTemplate) RunningPath() string {
 	return filepath.Join(t.EnvDirPath(), "run")
-}
-
-func (t *VmTemplate) TmpMemfilePath() string {
-	return filepath.Join(t.RunningPath(), consts.MemfileName)
-}
-
-func (t *VmTemplate) TmpSnapfilePath() string {
-	return filepath.Join(t.RunningPath(), consts.SnapfileName)
 }
 
 // The running path where save the rootfs, see more about [VmTemplate.TmpRunningPath]
@@ -194,10 +173,6 @@ func (t *VmTemplate) Validate() error {
 
 	if t.KernelVersion == "" {
 		return InvalidKernelVer
-	}
-
-	if t.FirecrackerBinaryPath == "" {
-		return InvalidBinaryPath
 	}
 
 	switch t.VmmType {

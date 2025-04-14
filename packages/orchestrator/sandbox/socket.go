@@ -9,7 +9,7 @@ import (
 
 func getSocketPath(sandboxID string) (string, error) {
 	filename := strings.Join([]string{
-		"firecracker-",
+		"vmm-",
 		sandboxID,
 		".socket",
 	}, "")

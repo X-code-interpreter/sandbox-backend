@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	text_template "text/template"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"github.com/docker/docker/client"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -19,11 +21,22 @@ import (
 var provisionEnvScriptFile string
 var EnvInstanceTemplate = text_template.Must(text_template.New("provisioning-script").Parse(provisionEnvScriptFile))
 
+type RootfsBuildMode int
+
+const (
+	Normal RootfsBuildMode = iota
+	BuildOnly
+	SkipBuild
+)
+
 type Env struct {
 	template.VmTemplate
 
-	StartCmdEnvFilePath      string `json:"startCmdEnvFilePath,omitempty"`
-	StartCmdWorkingDirectory string `json:"startCmdWorkingDirectory,omitempty"`
+	HypervisorBinaryPath     string          `json:"hypervisorPath,omitempty"`
+	StartCmdEnvFilePath      string          `json:"startCmdEnvFilePath,omitempty"`
+	StartCmdWorkingDirectory string          `json:"startCmdWorkingDirectory,omitempty"`
+	KernelDebugOutput        bool            `json:"kernelDebugOutput"`
+	RootfsBuildMode          RootfsBuildMode `json:"rootfsBuildMode"`
 }
 
 // Dump the env (i.e., the configuration) to json file under [VmTemplate.EnvDirPath].
@@ -63,7 +76,7 @@ func (e *Env) initialize(ctx context.Context, tracer trace.Tracer) error {
 		}
 	}()
 
-	err = os.MkdirAll(e.RunningPath(), 0o777)
+	err = utils.CreateDirAllIfNotExists(e.RunningPath(), 0o755)
 	if err != nil {
 		errMsg := fmt.Errorf("error creating tmp build dir: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -79,56 +92,79 @@ func (e *Env) Cleanup(ctx context.Context, tracer trace.Tracer) {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup")
 	defer childSpan.End()
 
-	err := os.RemoveAll(e.RunningPath())
-	if err != nil {
-		errMsg := fmt.Errorf("error cleaning up env files: %w", err)
-		telemetry.ReportError(childCtx, errMsg)
-	} else {
-		telemetry.ReportEvent(childCtx, "cleaned up env files")
+	if e.RootfsBuildMode == BuildOnly {
+		err := os.RemoveAll(e.RunningPath())
+		if err != nil {
+			errMsg := fmt.Errorf("error cleaning up env files: %w", err)
+			telemetry.ReportError(childCtx, errMsg)
+		} else {
+			telemetry.ReportEvent(childCtx, "cleaned up env files")
+		}
 	}
+}
+
+func (e *Env) moveSnapshot() error {
+	type snapshotFile struct {
+		base    string
+		dirPath string
+	}
+	var (
+		snapshotFiles []snapshotFile
+		tmpFileDir    = e.RunningPath()
+	)
+
+	switch e.VmmType {
+	case template.FIRECRACKER:
+		snapshotFiles = append(snapshotFiles, snapshotFile{
+			base:    consts.FcSnapfileName,
+			dirPath: filepath.Join(tmpFileDir, consts.FcSnapfileName),
+		}, snapshotFile{
+			base:    consts.FcMemfileName,
+			dirPath: filepath.Join(tmpFileDir, consts.FcMemfileName),
+		},
+		)
+	case template.CLOUDHYPERVISOR:
+		for _, base := range consts.ChSnapshotFiles {
+			snapshotFiles = append(snapshotFiles, snapshotFile{
+				base:    base,
+				dirPath: tmpFileDir,
+			})
+		}
+	default:
+		return template.InvalidVmmType
+	}
+	for _, file := range snapshotFiles {
+		if err := os.Rename(
+			filepath.Join(file.dirPath, file.base),
+			filepath.Join(e.EnvDirPath(), file.base),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "move-to-env-dir")
 	defer childSpan.End()
 
-	err := os.Rename(e.TmpSnapfilePath(), e.EnvSnapfilePath())
-	if err != nil {
-		errMsg := fmt.Errorf("error moving snapshot file: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
+	if err := e.moveSnapshot(); err != nil {
+		telemetry.ReportCriticalError(childCtx, err)
 	}
 
-	telemetry.ReportEvent(childCtx, "moved snapshot file")
+	telemetry.ReportEvent(childCtx, "move snapshot files")
 
-	err = os.Rename(e.TmpMemfilePath(), e.EnvMemfilePath())
-	if err != nil {
-		errMsg := fmt.Errorf("error moving memfile: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
-	}
-
-	telemetry.ReportEvent(childCtx, "moved memfile")
-
-	err = os.Rename(e.TmpRootfsPath(), e.EnvRootfsPath())
-	if err != nil {
-		errMsg := fmt.Errorf("error moving rootfs: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return errMsg
+	if err := os.Rename(e.TmpRootfsPath(), e.EnvRootfsPath()); err != nil {
+		telemetry.ReportCriticalError(childCtx, err)
+		return err
 	}
 
 	telemetry.ReportEvent(childCtx, "moved rootfs")
 
 	if e.Overlay {
-		err = os.Rename(e.TmpWritableRootfsPath(), e.EnvWritableRootfsPath())
-		if err != nil {
-			errMsg := fmt.Errorf("error moving writable rootfs: %w", err)
-			telemetry.ReportCriticalError(childCtx, errMsg)
-
-			return errMsg
+		if err := os.Rename(e.TmpWritableRootfsPath(), e.EnvWritableRootfsPath()); err != nil {
+			telemetry.ReportCriticalError(childCtx, err)
+			return err
 		}
 	}
 
@@ -150,12 +186,14 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 
 	defer e.Cleanup(childCtx, tracer)
 
-	rootfs, err := NewRootfs(childCtx, tracer, docker, e)
-	if err != nil {
-		errMsg := fmt.Errorf("error creating rootfs for env '%s' during build: %w", e.EnvID, err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
+	if e.RootfsBuildMode != SkipBuild {
+		_, err = NewRootfs(childCtx, tracer, docker, e)
+		if err != nil {
+			errMsg := fmt.Errorf("error creating rootfs for env '%s' during build: %w", e.EnvID, err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
 
-		return errMsg
+			return errMsg
+		}
 	}
 
 	network, err := NewNetworkEnvForSnapshot(childCtx, tracer, e)
@@ -176,7 +214,7 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 		}
 	}()
 
-	_, err = NewSnapshot(childCtx, tracer, e, network, rootfs)
+	_, err = NewSnapshot(childCtx, tracer, e, network)
 	if err != nil {
 		errMsg := fmt.Errorf("error snapshot for env '%s' during build: %w", e.EnvID, err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -203,8 +241,8 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 	return nil
 }
 
-// api-socket of FC
+// api-socket of vm
 func (e *Env) GetSocketPath() string {
-	socketFileName := fmt.Sprintf("fc-build-sock-%s.sock", e.EnvID)
+	socketFileName := fmt.Sprintf("vmm-build-sock-%s.sock", e.EnvID)
 	return filepath.Join(os.TempDir(), socketFileName)
 }

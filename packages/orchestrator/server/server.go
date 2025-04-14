@@ -113,7 +113,7 @@ func (s *server) shutdown() {
 		sbx.Stop(ctx, s.tracer)
 	}
 	for _, sbx := range s.sandboxes {
-		if err := sbx.WaitAndCleanup(ctx, s.tracer, s.dns); err != nil {
+		if err := sbx.WaitAndCleanup(ctx, s.tracer); err != nil {
 			// record errors during cleanup
 			errMsg := fmt.Errorf("wait and cleanup for sandbox failed: %w", err)
 			telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sbx.SandboxID()))
@@ -241,7 +241,11 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
 	// so skip firecrackerBinaryPath args
 	err = func() error {
-		env, err := sandbox.NewSandboxFiles(ctx, sandboxID, envID, "")
+		env, err := sandbox.NewSandboxConfig(ctx, &orchestrator.SandboxCreateRequest{
+			// only this two field is enough to purge
+			SandboxID:  sandboxID,
+			TemplateID: envID,
+		})
 		if err != nil {
 			return fmt.Errorf("new sandbox failed: %w", err)
 		}

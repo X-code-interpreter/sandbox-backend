@@ -15,7 +15,5 @@ const (
 
 	RootfsName       = "rootfs.ext4"          // the base image
 	WritableFsName   = "writable-rootfs.ext4" // an empty writable image
-	SnapfileName     = "snapfile"
-	MemfileName      = "memfile"
 	TemplateFileName = "template.json"
 )

@@ -30,13 +30,12 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	childCtx, childSpan := s.tracer.Start(ctx, "grpc-create")
 	defer childSpan.End()
 	childSpan.SetAttributes(
-		attribute.String("env.id", req.Sandbox.TemplateID),
-		attribute.String("sandbox.id", req.Sandbox.SandboxID),
+		attribute.String("env.id", req.TemplateID),
+		attribute.String("sandbox.id", req.SandboxID),
 	)
 
 	// TODO(huang-jl): support attach metadata to sandbox
-	sandboxConfig := req.Sandbox
-	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, s.dns, sandboxConfig, s.netManager)
+	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, s.dns, req, s.netManager)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create sandbox: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -55,10 +54,10 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		defer waitSpan.End()
 		defer telemetry.ReportEvent(waitCtx, "sandbox waited for stopping")
 		defer s.metric.DelSandbox(waitCtx, sbx)
-		defer s.DelSandbox(req.Sandbox.SandboxID)
+		defer s.DelSandbox(req.SandboxID)
 
 		// TODO(huang-jl) put idx backed to network manager?
-		defer sbx.CleanupAfterFCStop(waitCtx, s.tracer, s.dns)
+		defer sbx.CleanupAfterFCStop(waitCtx, s.tracer)
 
 		err := sbx.Wait()
 		if err != nil {
@@ -350,6 +349,6 @@ func (s *server) Snapshot(ctx context.Context, req *orchestrator.SandboxSnapshot
 	}
 
 	return &orchestrator.SandboxSnapshotResponse{
-		Path: sbx.Env.EnvInstanceCreateSnapshotPath(),
+		Path: sbx.Config.EnvInstanceCreateSnapshotPath(),
 	}, nil
 }

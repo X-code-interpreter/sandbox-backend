@@ -105,7 +105,7 @@ checkSocketCreation:
 			break checkSocketCreation
 		}
 	}
-	telemetry.ReportEvent(childCtx, "socket created", attribute.Int("retry_times", retryTimes))
+	telemetry.ReportEvent(childCtx, "fc socket created", attribute.Int("retry_times", retryTimes))
 
 	fcClient := NewFirecrackerAPI(socketPath)
 	param := operations.NewGetFirecrackerVersionParams().WithContext(childCtx)

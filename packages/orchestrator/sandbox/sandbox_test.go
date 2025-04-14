@@ -24,7 +24,7 @@ func TestEnd2End(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sandboxConfig := &orchestrator.SandboxConfig{
+	sandboxConfig := &orchestrator.SandboxCreateRequest{
 		TemplateID: "default-code-interpreter",
 		SandboxID:  "test-end-2-end",
 	}
@@ -33,7 +33,7 @@ func TestEnd2End(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Log("Sandbox has started...")
-	defer sandbox.CleanupAfterFCStop(ctx, tracer, dns)
+	defer sandbox.CleanupAfterFCStop(ctx, tracer)
 	<-ch
 	err = sandbox.Stop(ctx, tracer)
 	if err != nil {

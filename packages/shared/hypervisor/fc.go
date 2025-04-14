@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/fc/client"
@@ -19,23 +17,11 @@ import (
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 )
 
-const (
-	waitTimeForFCStart  = 10 * time.Second
-	waitTimeForStartCmd = 15 * time.Second
-	waitTimeForFCConfig = 500 * time.Millisecond
-
-	socketWaitTimeout = 2 * time.Second
-)
-
 var (
-	tracer_     trace.Tracer = nil
-	initTracer_ sync.Once
-
 	_ Hypervisor = (*Firecracker)(nil)
 )
 
 type FcConfig struct {
-	SandboxID          string
 	VcpuCount          int64
 	MemoryMB           int64
 	KernelImagePath    string
@@ -44,7 +30,6 @@ type FcConfig struct {
 	EnableOverlayFS    bool
 	RootfsPath         string
 	WritableRootfsPath string
-	FcSocketPath       string
 	TapDevName         string
 	GuestNetIfaceName  string
 	GuestNetMacAddr    string
@@ -54,7 +39,7 @@ type FcConfig struct {
 }
 
 func init() {
-	err := utils.CreateDirAllIfNotExists(os.TempDir())
+	err := utils.CreateDirAllIfNotExists(os.TempDir(), 0o777)
 	if err != nil {
 		panic(err)
 	}
@@ -68,6 +53,10 @@ type MmdsMetadata struct {
 	Address   string `json:"address"`
 	TraceID   string `json:"traceID,omitempty"`
 	TeamID    string `json:"teamID,omitempty"`
+}
+
+func FirecrackerCmd(binaryPath, socketPath string) string {
+	return binaryPath + " --api-sock " + socketPath
 }
 
 type Firecracker struct {
@@ -87,6 +76,8 @@ func (fc *Firecracker) configBootSource(ctx context.Context) error {
 			KernelImagePath: &fc.config.KernelImagePath,
 		},
 	}
+
+	telemetry.ReportEvent(ctx, "configure fc boot source", attribute.String("boot_cmd", fc.config.KernelBootCmd))
 
 	_, err := fc.client.Operations.PutGuestBootSource(&bootSourceConfig)
 	return err
@@ -164,7 +155,7 @@ func (fc *Firecracker) configMMDS(ctx context.Context) error {
 		Context: ctx,
 		Body: &models.MmdsConfig{
 			Version:           &mmdsVersion,
-			NetworkInterfaces: []string{consts.FcIfaceID},
+			NetworkInterfaces: []string{fc.config.GuestNetIfaceName},
 		},
 	}
 
@@ -246,7 +237,7 @@ func (fc *Firecracker) Configure(ctx context.Context) error {
 	telemetry.ReportEvent(ctx, "set fc mmds config")
 
 	// We may need to sleep before start - previous configuration is processes asynchronously. How to do this sync or in one go?
-	time.Sleep(waitTimeForFCConfig)
+	time.Sleep(consts.WaitTimeForConfig)
 
 	return nil
 }
@@ -321,8 +312,8 @@ func (fc *Firecracker) Resume(ctx context.Context) error {
 }
 
 func (fc *Firecracker) Snapshot(ctx context.Context, dir string) error {
-	memfilePath := filepath.Join(dir, consts.MemfileName)
-	snapfileName := filepath.Join(dir, consts.SnapfileName)
+	memfilePath := filepath.Join(dir, consts.FcMemfileName)
+	snapfileName := filepath.Join(dir, consts.FcSnapfileName)
 
 	snapshotType := models.SnapshotCreateParamsSnapshotTypeFull
 	if fc.config.EnableDiffSnapshot {
@@ -356,8 +347,8 @@ func (fc *Firecracker) Snapshot(ctx context.Context, dir string) error {
 }
 
 func (fc *Firecracker) Restore(ctx context.Context, dir string) error {
-	memfilePath := filepath.Join(dir, consts.MemfileName)
-	snapfileName := filepath.Join(dir, consts.SnapfileName)
+	memfilePath := filepath.Join(dir, consts.FcMemfileName)
+	snapfileName := filepath.Join(dir, consts.FcSnapfileName)
 
 	membackendType := models.MemoryBackendBackendTypeFile
 	snapshotLoadParams := models.SnapshotLoadParams{
