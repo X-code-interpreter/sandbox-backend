@@ -84,36 +84,35 @@ func (fc *Firecracker) configBootSource(ctx context.Context) error {
 }
 
 func (fc *Firecracker) configBlkDrivers(ctx context.Context) error {
+	var blkDriverConfigs []operations.PutGuestDriveByIDParams
 	ioEngine := "Async"
 
 	// first prepare the base rootfs
-	driverId := "rootfs"
-	isRootDevice := true
-	pathOnHost := fc.config.RootfsPath
-	blkDriverConfigs := []operations.PutGuestDriveByIDParams{
-		{
-			Context: ctx,
-			DriveID: driverId,
-			Body: &models.Drive{
-				DriveID:      &driverId,
-				PathOnHost:   pathOnHost,
-				IsRootDevice: &isRootDevice,
-				IsReadOnly:   fc.config.EnableOverlayFS,
-				IoEngine:     &ioEngine,
-			},
-		},
-	}
-
-	if fc.config.EnableOverlayFS {
-		driverId = "writablefs"
-		pathOnHost = fc.config.WritableRootfsPath
-		isRootDevice = false
+	{
+		driverId := "rootfs"
+		isRootDevice := true
 		blkDriverConfigs = append(blkDriverConfigs, operations.PutGuestDriveByIDParams{
 			Context: ctx,
 			DriveID: driverId,
 			Body: &models.Drive{
 				DriveID:      &driverId,
-				PathOnHost:   pathOnHost,
+				PathOnHost:   fc.config.RootfsPath,
+				IsRootDevice: &isRootDevice,
+				IsReadOnly:   fc.config.EnableOverlayFS,
+				IoEngine:     &ioEngine,
+			},
+		})
+	}
+
+	if fc.config.EnableOverlayFS {
+		driverId := "writablefs"
+		isRootDevice := false
+		blkDriverConfigs = append(blkDriverConfigs, operations.PutGuestDriveByIDParams{
+			Context: ctx,
+			DriveID: driverId,
+			Body: &models.Drive{
+				DriveID:      &driverId,
+				PathOnHost:   fc.config.WritableRootfsPath,
 				IsRootDevice: &isRootDevice,
 				IsReadOnly:   false,
 				IoEngine:     &ioEngine,

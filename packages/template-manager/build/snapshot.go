@@ -239,11 +239,9 @@ func (s *Snapshot) generateChConfig() *hypervisor.ChConfig {
 	var (
 		kernelArgs = []string{
 			"reboot=k",
-			"panic=1",
 			"nomodules",
 			"ipv6.disable=1",
 			"random.trust_cpu=on",
-			"root=/dev/vda rw",
 			//client-ip,server-ip,gateway-ip,netmask,hostname,device,autoconf,dns0-ip
 			fmt.Sprintf("ip=%s::%s:%s:ch-instance:%s:off:8.8.8.8",
 				consts.GuestNetIpAddr,
@@ -256,10 +254,16 @@ func (s *Snapshot) generateChConfig() *hypervisor.ChConfig {
 	if s.env.KernelDebugOutput {
 		kernelArgs = append(kernelArgs, "loglevel=6 console=hvc0")
 	} else {
-		kernelArgs = append(kernelArgs, "loglevel=1 quiet")
+		kernelArgs = append(kernelArgs, "loglevel=1 quiet panic=1")
 	}
 	if s.env.Overlay {
-		kernelArgs = append(kernelArgs, "overlay_root=vdb init="+constants.OverlayInitPath)
+		kernelArgs = append(kernelArgs,
+			"root=/dev/pmem0 ro rootflags=dax=always",
+			"overlay_root=vda init="+constants.OverlayInitPath,
+			// "overlay_root=pmem1 overlay_root_flags=dax=always init="+constants.OverlayInitPath,
+		)
+	} else {
+		kernelArgs = append(kernelArgs, "root=/dev/pmem0 rw rootflags=dax=always")
 	}
 	return &hypervisor.ChConfig{
 		VcpuCount:          s.env.VCpuCount,

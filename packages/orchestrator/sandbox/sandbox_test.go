@@ -24,11 +24,11 @@ func TestEnd2End(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sandboxConfig := &orchestrator.SandboxCreateRequest{
+	req := &orchestrator.SandboxCreateRequest{
 		TemplateID: "default-code-interpreter",
 		SandboxID:  "test-end-2-end",
 	}
-	sandbox, err := NewSandbox(ctx, tracer, dns, sandboxConfig, nm)
+	sandbox, err := NewSandbox(ctx, tracer, dns, req, nm)
 	if err != nil {
 		t.Fatal(err)
 	}

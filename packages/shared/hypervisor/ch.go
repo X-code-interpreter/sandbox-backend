@@ -48,25 +48,39 @@ func NewCloudHypervisor(config *ChConfig, client *ch.ClientWithResponses) *Cloud
 	return &CloudHypervisor{config, client}
 }
 
+func isRequestSucceed(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
+}
+
 func (vmm *CloudHypervisor) Configure(ctx context.Context) error {
 	var diskConfigs []ch.DiskConfig
+	var pmemConfigs []ch.PmemConfig
 	{
 		id := "rootfs"
-		readonly := vmm.config.EnableOverlayFS
-		diskConfigs = append(diskConfigs, ch.DiskConfig{
-			Id:       &id,
-			Path:     vmm.config.RootfsPath,
-			Readonly: &readonly,
+		// when enable overlayfs, we discard writes, as rootfs must be read-only
+		// when disable overlayfs, we keep writes, as rootfs is writable
+		discardWrites := vmm.config.EnableOverlayFS
+		pmemConfigs = append(pmemConfigs, ch.PmemConfig{
+			DiscardWrites: &discardWrites,
+			File:          vmm.config.RootfsPath,
+			Id:            &id,
 		})
 	}
+
 	if vmm.config.EnableOverlayFS {
 		id := "writablefs"
+		// discardWrites := false
 		readonly := false
 		diskConfigs = append(diskConfigs, ch.DiskConfig{
 			Id:       &id,
-			Path:     vmm.config.RootfsPath,
+			Path:     vmm.config.WritableRootfsPath,
 			Readonly: &readonly,
 		})
+		// pmemConfigs = append(pmemConfigs, ch.PmemConfig{
+		// 	DiscardWrites: &discardWrites,
+		// 	File:          vmm.config.WritableRootfsPath,
+		// 	Id:            &id,
+		// })
 	}
 
 	netConfigs := []ch.NetConfig{
@@ -91,6 +105,7 @@ func (vmm *CloudHypervisor) Configure(ctx context.Context) error {
 			Cmdline: &vmm.config.KernelBootCmd,
 			Kernel:  &vmm.config.KernelImagePath,
 		},
+		Pmem: &pmemConfigs,
 		Console: &ch.ConsoleConfig{
 			Mode: ch.ConsoleConfigModeTty,
 		},
@@ -100,10 +115,16 @@ func (vmm *CloudHypervisor) Configure(ctx context.Context) error {
 	}
 
 	telemetry.ReportEvent(ctx, "configure ch boot source", attribute.String("boot_cmd", vmm.config.KernelBootCmd))
-	if _, err := vmm.client.CreateVMWithResponse(ctx, vmConfig); err != nil {
+	resp, err := vmm.client.CreateVMWithResponse(ctx, vmConfig)
+	if err != nil {
 		errMsg := fmt.Errorf("error create cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error create cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(ctx, "created ch vm")
@@ -111,10 +132,15 @@ func (vmm *CloudHypervisor) Configure(ctx context.Context) error {
 }
 
 func (vmm *CloudHypervisor) Start(ctx context.Context) error {
-	if _, err := vmm.client.BootVMWithResponse(ctx); err != nil {
+	resp, err := vmm.client.BootVMWithResponse(ctx)
+	if err != nil {
 		errMsg := fmt.Errorf("error boot cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
-
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error boot cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(ctx, "booted ch vm")
@@ -127,11 +153,16 @@ func (vmm *CloudHypervisor) Cleanup(ctx context.Context) error {
 }
 
 func (vmm *CloudHypervisor) Pause(ctx context.Context) error {
-	_, err := vmm.client.PauseVMWithResponse(ctx)
+	resp, err := vmm.client.PauseVMWithResponse(ctx)
 	if err != nil {
 		errMsg := fmt.Errorf("error pause cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error pause cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(ctx, "paused ch vm")
@@ -139,10 +170,16 @@ func (vmm *CloudHypervisor) Pause(ctx context.Context) error {
 }
 
 func (vmm *CloudHypervisor) Resume(ctx context.Context) error {
-	if _, err := vmm.client.ResumeVMWithResponse(ctx); err != nil {
+	resp, err := vmm.client.ResumeVMWithResponse(ctx)
+	if err != nil {
 		errMsg := fmt.Errorf("error resume cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error pause cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(ctx, "resumed ch vm")
@@ -155,10 +192,16 @@ func (vmm *CloudHypervisor) Snapshot(ctx context.Context, dir string) error {
 	req := ch.VmSnapshotConfig{
 		DestinationUrl: &dest,
 	}
-	if _, err := vmm.client.PutVmSnapshotWithResponse(ctx, req); err != nil {
+	resp, err := vmm.client.PutVmSnapshotWithResponse(ctx, req)
+	if err != nil {
 		errMsg := fmt.Errorf("error snapshot cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error snapshot cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	telemetry.ReportEvent(ctx, "snapshotted ch vm")
@@ -169,10 +212,16 @@ func (vmm *CloudHypervisor) Restore(ctx context.Context, dir string) error {
 	req := ch.RestoreConfig{
 		SourceUrl: "file://" + dir,
 	}
-	if _, err := vmm.client.PutVmRestoreWithResponse(ctx, req); err != nil {
+	resp, err := vmm.client.PutVmRestoreWithResponse(ctx, req)
+	if err != nil {
 		errMsg := fmt.Errorf("error restore cloud hypervisor vm: %w", err)
 		telemetry.ReportCriticalError(ctx, errMsg)
 
+		return errMsg
+	}
+	if !isRequestSucceed(resp.StatusCode()) {
+		errMsg := fmt.Errorf("error snapshot cloud hypervisor vm: %s %s", resp.Status(), string(resp.Body))
+		telemetry.ReportCriticalError(ctx, errMsg)
 		return errMsg
 	}
 	return nil

@@ -1,6 +1,6 @@
 module github.com/X-code-interpreter/sandbox-backend/packages/cli
 
-go 1.21.0
+go 1.23
 
 require (
 	github.com/X-code-interpreter/sandbox-backend/packages/shared v0.0.0

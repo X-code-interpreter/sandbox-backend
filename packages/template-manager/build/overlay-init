@@ -27,7 +27,7 @@ pivot() {
 
     # umount the old rootfs and the ext4 fs
     # only expose the new overlay rootfs
-    umount /rom/overlay && (umount /rom/dev || true) && umount /rom
+    # umount /rom/overlay && (umount /rom/dev || true) && umount /rom
 }
 
 # Overlay is configured under /overlay
@@ -43,6 +43,8 @@ do_overlay() {
     if [ "$overlay_root" = ram ] ||
            [ -z "$overlay_root" ]; then
         /bin/mount -t tmpfs -o noatime,mode=0755 tmpfs /overlay
+    elif [ ! -z "$overlay_root_flags" ]; then
+        /bin/mount -t ext4 -o "$overlay_root_flags" "/dev/$overlay_root" /overlay
     else
         /bin/mount -t ext4 "/dev/$overlay_root" /overlay
     fi
@@ -56,6 +58,7 @@ if [ -n "$overlay_root" ] &&
        [ ! -b "/dev/$overlay_root" ]; then
     echo -n "FATAL: "
     echo "Overlay root given as $overlay_root but /dev/$overlay_root does not exist"
+    ls /dev
     exit 1
 fi
 

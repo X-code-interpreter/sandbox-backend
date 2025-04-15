@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -135,7 +136,7 @@ func (n *NetworkEnvInfo) HostClonedCIDR() string {
 func (n *NetworkEnvInfo) Cleanup(ctx context.Context) error {
 	var finalErr error
 
-	for _, f := range n.cleanup {
+	for _, f := range slices.Backward(n.cleanup) {
 		if err := f(); err != nil {
 			telemetry.ReportCriticalError(ctx, err)
 			finalErr = errors.Join(finalErr, err)

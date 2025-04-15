@@ -506,10 +506,14 @@ func (r *Rootfs) createOverlayRootfsFile(ctx context.Context, tracer trace.Trace
 	}
 	targetFileSize := getAlignFileSizeForPmem(fileSize)
 	if fileSize != targetFileSize {
-		if err = resizeFsFile(ctx, rootfsFile, fileSize); err != nil {
+		if err = resizeFsFile(ctx, rootfsFile, targetFileSize); err != nil {
 			errMsg := fmt.Errorf("error prepare writable roofs file: %w", err)
 			telemetry.ReportCriticalError(ctx, errMsg)
 		}
+		telemetry.ReportEvent(ctx, "resize read-only rootfs",
+			attribute.Int64("size", targetFileSize),
+			attribute.String("name", rootfsFile.Name()),
+		)
 	}
 	r.env.RootfsSize = targetFileSize
 

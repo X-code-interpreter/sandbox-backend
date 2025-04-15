@@ -84,6 +84,7 @@ func main() {
 		Fatal("create docker client error: ", err)
 	}
 
+	fmt.Printf("env: %+v\n", env)
 	if err := env.Build(ctx, otel.Tracer("template-manager"), dockerClient); err != nil {
 		Fatal("build env error: ", err)
 	}

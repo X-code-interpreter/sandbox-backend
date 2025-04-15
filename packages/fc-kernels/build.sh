@@ -4,17 +4,17 @@ BASE_DIR=/mnt/data/X-code-interpreter
 
 set -euo pipefail
 
-function build_version {
+function fc_build_version {
   local version=$1
   local major_version=$(echo "$version" | cut -d '.' -f 1-2)
   echo "Starting build for kernel version: $version"
 
-  if [ -e "../configs/${version}.config" ]; then
+  if [ -e "../configs/fc-${version}.config" ]; then
     echo "using ${version}.config"
-    cp ../configs/"${version}.config" .config
-  elif [ -e "../configs/${major_version}.config" ]; then
+    cp ../configs/"fc-${version}.config" .config
+  elif [ -e "../configs/fc-${major_version}.config" ]; then
     echo "using ${major_version}.config"
-    cp ../configs/"${major_version}.config" .config
+    cp ../configs/"fc-${major_version}.config" .config
   else
     echo "No matching kernel config find for $version"
     return

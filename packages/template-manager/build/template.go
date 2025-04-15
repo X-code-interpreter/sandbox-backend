@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,9 +26,13 @@ type RootfsBuildMode int
 
 const (
 	Normal RootfsBuildMode = iota
+	// build only rootfs
 	BuildOnly
+	// skip build rootfs
 	SkipBuild
 )
+
+var InvalidRootfsBuildMode = errors.New("invalid rootfs build mode")
 
 type Env struct {
 	template.VmTemplate
@@ -92,7 +97,7 @@ func (e *Env) Cleanup(ctx context.Context, tracer trace.Tracer) {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup")
 	defer childSpan.End()
 
-	if e.RootfsBuildMode == BuildOnly {
+	if e.RootfsBuildMode == Normal {
 		err := os.RemoveAll(e.RunningPath())
 		if err != nil {
 			errMsg := fmt.Errorf("error cleaning up env files: %w", err)
@@ -117,10 +122,10 @@ func (e *Env) moveSnapshot() error {
 	case template.FIRECRACKER:
 		snapshotFiles = append(snapshotFiles, snapshotFile{
 			base:    consts.FcSnapfileName,
-			dirPath: filepath.Join(tmpFileDir, consts.FcSnapfileName),
+			dirPath: tmpFileDir,
 		}, snapshotFile{
 			base:    consts.FcMemfileName,
-			dirPath: filepath.Join(tmpFileDir, consts.FcMemfileName),
+			dirPath: tmpFileDir,
 		},
 		)
 	case template.CLOUDHYPERVISOR:
@@ -150,6 +155,7 @@ func (e *Env) MoveToEnvDir(ctx context.Context, tracer trace.Tracer) error {
 
 	if err := e.moveSnapshot(); err != nil {
 		telemetry.ReportCriticalError(childCtx, err)
+		return err
 	}
 
 	telemetry.ReportEvent(childCtx, "move snapshot files")
@@ -186,7 +192,8 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 
 	defer e.Cleanup(childCtx, tracer)
 
-	if e.RootfsBuildMode != SkipBuild {
+	switch e.RootfsBuildMode {
+	case Normal, BuildOnly:
 		_, err = NewRootfs(childCtx, tracer, docker, e)
 		if err != nil {
 			errMsg := fmt.Errorf("error creating rootfs for env '%s' during build: %w", e.EnvID, err)
@@ -194,6 +201,13 @@ func (e *Env) Build(ctx context.Context, tracer trace.Tracer, docker *client.Cli
 
 			return errMsg
 		}
+	case SkipBuild:
+	default:
+		return InvalidRootfsBuildMode
+	}
+
+	if e.RootfsBuildMode == BuildOnly {
+		return nil
 	}
 
 	network, err := NewNetworkEnvForSnapshot(childCtx, tracer, e)

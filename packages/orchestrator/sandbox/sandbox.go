@@ -162,7 +162,7 @@ func NewSandbox(
 	}
 	telemetry.ReportEvent(childCtx, "assembled env files info")
 
-	err = config.Ensure(childCtx, tracer)
+	err = config.EnsureFiles(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create env for FC: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -172,7 +172,7 @@ func NewSandbox(
 
 	defer func() {
 		if err != nil {
-			envErr := config.Cleanup(childCtx, tracer)
+			envErr := config.CleanupFiles(childCtx, tracer)
 			if envErr != nil {
 				errMsg := fmt.Errorf("error deleting env after failed fc start: %w", err)
 				telemetry.ReportCriticalError(childCtx, errMsg)
@@ -324,7 +324,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 		}
 	}
 
-	err = s.Config.Cleanup(childCtx, tracer)
+	err = s.Config.CleanupFiles(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to delete sandbox files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)

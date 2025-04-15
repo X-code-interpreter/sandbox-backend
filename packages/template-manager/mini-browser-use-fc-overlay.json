@@ -1,5 +1,5 @@
 {
-  "template": "mini-browser-use",
+  "template": "mini-browser-use-fc-overlay",
   "startCmd": ". /home/user/venv/bin/activate && python examples/server.py",
   "memMB": 4096,
   "vcpu": 1,
@@ -8,7 +8,7 @@
   "hugePages": false,
   "dockerImg": "jialianghuang/default-browser-use:latest",
   "noPull": true,
-  "overlay": false,
+  "overlay": true,
   "startCmdWorkingDirectory": "/home/user/browser-use",
   "vmmType": "firecracker",
   "rootfsBuildMode": 0,

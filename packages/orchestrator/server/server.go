@@ -249,7 +249,7 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 		if err != nil {
 			return fmt.Errorf("new sandbox failed: %w", err)
 		}
-		return env.Cleanup(ctx, s.tracer)
+		return env.CleanupFiles(ctx, s.tracer)
 	}()
 	if err != nil {
 		telemetry.ReportError(ctx, err)

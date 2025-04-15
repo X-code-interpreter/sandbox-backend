@@ -192,7 +192,7 @@ func (config *Config) EnvInstanceCreateSnapshotPath() string {
 	return filepath.Join(config.EnvDirPath(), EnvInstancesSnapshotDirName, config.SandboxID)
 }
 
-func (config *Config) Ensure(ctx context.Context, tracer trace.Tracer) error {
+func (config *Config) EnsureFiles(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "create-sandbox-files",
 		trace.WithAttributes(
 			attribute.String("env_id", config.EnvID),
@@ -264,7 +264,7 @@ func (config *Config) Ensure(ctx context.Context, tracer trace.Tracer) error {
 	return nil
 }
 
-func (config *Config) Cleanup(
+func (config *Config) CleanupFiles(
 	ctx context.Context,
 	tracer trace.Tracer,
 ) error {

@@ -1,17 +1,17 @@
 {
-  "template": "mini-browser-use",
+  "template": "mini-browser-use-ch",
   "startCmd": ". /home/user/venv/bin/activate && python examples/server.py",
   "memMB": 4096,
   "vcpu": 1,
   "diskMB": 5120,
-  "kernelVersion": "6.1.134",
+  "kernelVersion": "ch-6.1.134",
   "hugePages": false,
   "dockerImg": "jialianghuang/default-browser-use:latest",
   "noPull": true,
-  "overlay": false,
+  "overlay": true,
   "startCmdWorkingDirectory": "/home/user/browser-use",
-  "vmmType": "firecracker",
+  "vmmType": "cloud-hypervisor",
   "rootfsBuildMode": 0,
   "kernelDebugOutput": false,
-  "hypervisorPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker"
+  "hypervisorPath": "/root/codes/cloud-hypervisor/target/x86_64-unknown-linux-musl/release/cloud-hypervisor"
 }
