@@ -325,7 +325,7 @@ func NewSnapshot(
 		env,
 	)
 	if err != nil {
-		errMsg := fmt.Errorf("error starting fc process: %w", err)
+		errMsg := fmt.Errorf("error starting vmm process: %w", err)
 
 		return nil, errMsg
 	}

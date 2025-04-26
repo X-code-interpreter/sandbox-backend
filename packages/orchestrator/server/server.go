@@ -141,7 +141,7 @@ func getOrphanProcess(sandboxID string) (*process.Process, error) {
 			continue
 		}
 		if strings.HasPrefix(cmdline, "unshare") &&
-			strings.Contains(cmdline, "firecracker") &&
+			(strings.Contains(cmdline, constants.FcBinaryName) || strings.Contains(cmdline, constants.ChBinaryName)) &&
 			strings.Contains(cmdline, fmt.Sprintf("ip netns exec %s", netNsName)) {
 			if res != nil {
 				return nil, fmt.Errorf("find more than one process match sandbox id %s", sandboxID)
@@ -249,7 +249,7 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 		if err != nil {
 			return fmt.Errorf("new sandbox failed: %w", err)
 		}
-		return env.CleanupFiles(ctx, s.tracer)
+		return env.CleanupFiles(ctx, s.tracer, false)
 	}()
 	if err != nil {
 		telemetry.ReportError(ctx, err)

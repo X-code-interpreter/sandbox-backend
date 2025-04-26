@@ -77,18 +77,24 @@ checkSocketCreation:
 	reqTimer := time.NewTimer(interval)
 	defer reqTimer.Stop()
 	for {
-		if res, err := chClient.GetVmmPingWithResponse(childCtx); err == nil && res.JSON200 != nil {
-			telemetry.ReportEvent(
-				childCtx,
-				"ch client ping vmm succeed",
-				attribute.String("ch_version", res.JSON200.Version),
-				attribute.Int("retry_times", retryTimes),
-			)
-			return chClient, nil
-		} else {
-			// errMsg := fmt.Errorf("ch client ping res: err %v code %d header %+v body %s json %v", err, res.StatusCode(), res.HTTPResponse.Header, string(res.Body), res.JSON200)
-			errMsg := fmt.Errorf("ch client ping error: err %v code %d", err, res.StatusCode())
+		res, err := chClient.GetVmmPingWithResponse(childCtx)
+		if err != nil {
+			errMsg := fmt.Errorf("ch client ping error: err %v", err)
 			telemetry.ReportError(childCtx, errMsg)
+		} else {
+			// assert err == nil
+			if res.JSON200 != nil {
+				telemetry.ReportEvent(
+					childCtx,
+					"ch client ping vmm succeed",
+					attribute.String("ch_version", res.JSON200.Version),
+					attribute.Int("retry_times", retryTimes),
+				)
+				return chClient, nil
+			} else {
+				errMsg := fmt.Errorf("ch client ping error: err %v, status code = %d", err, res.StatusCode())
+				telemetry.ReportError(childCtx, errMsg)
+			}
 		}
 		reqTimer.Reset(interval)
 		select {

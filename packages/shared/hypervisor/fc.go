@@ -384,7 +384,7 @@ func (fc *Firecracker) Restore(ctx context.Context, dir string) error {
 		return err
 	}, 3)
 	if err != nil {
-		telemetry.ReportCriticalError(ctx, err)
+		telemetry.ReportCriticalError(ctx, err, attribute.Int("retry_times", retryTimes))
 		return err
 	}
 	telemetry.ReportEvent(ctx, "mmds data set", attribute.Int("retry_times", retryTimes))

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"syscall"
 	"time"
 )
 
@@ -23,7 +24,10 @@ func RetryHttpRequest(ctx context.Context, httpReqFunc func() error, maxRetryTim
 		}
 		// we only retry with EOF error
 		if e := (&url.Error{}); errors.As(err, &e) {
-			if errors.Is(e.Err, io.EOF) {
+			switch {
+			case errors.Is(e.Err, io.EOF):
+				fallthrough
+			case errors.Is(e.Err, syscall.ECONNREFUSED):
 				goto cont
 			}
 		}

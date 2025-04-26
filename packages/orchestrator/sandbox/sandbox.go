@@ -172,7 +172,7 @@ func NewSandbox(
 
 	defer func() {
 		if err != nil {
-			envErr := config.CleanupFiles(childCtx, tracer)
+			envErr := config.CleanupFiles(childCtx, tracer, false)
 			if envErr != nil {
 				errMsg := fmt.Errorf("error deleting env after failed fc start: %w", err)
 				telemetry.ReportCriticalError(childCtx, errMsg)
@@ -297,6 +297,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 	defer childSpan.End()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	keepInstanceDir := false
 
 	if s.State != orchestrator.SandboxState_STOP {
 		// even this is weird, we still cleanup this fc vm
@@ -308,6 +309,8 @@ func (s *Sandbox) cleanupAfterFCStop(
 			attribute.String("sandbox.id", s.SandboxID()),
 		)
 		finalErr = errors.Join(finalErr, err)
+		// weird state, so we keep instance dir for debugging purpose
+		keepInstanceDir = true
 	}
 	s.State = orchestrator.SandboxState_CLEANNING
 
@@ -324,7 +327,7 @@ func (s *Sandbox) cleanupAfterFCStop(
 		}
 	}
 
-	err = s.Config.CleanupFiles(childCtx, tracer)
+	err = s.Config.CleanupFiles(childCtx, tracer, keepInstanceDir)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to delete sandbox files: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)

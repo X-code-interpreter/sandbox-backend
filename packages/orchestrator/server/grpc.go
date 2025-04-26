@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
@@ -128,7 +129,8 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 		if !strings.HasPrefix(cmdline, "unshare") {
 			continue
 		}
-		if !strings.Contains(cmdline, "firecracker") {
+		if !strings.Contains(cmdline, constants.FcBinaryName) &&
+			!strings.Contains(cmdline, constants.ChBinaryName) {
 			continue
 		}
 		if !strings.Contains(cmdline, "mount --bind") {

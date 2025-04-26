@@ -264,9 +264,11 @@ func (config *Config) EnsureFiles(ctx context.Context, tracer trace.Tracer) erro
 	return nil
 }
 
+// @keepInstanceDir: if true, do not remove env_instance_path. if false, remove.
 func (config *Config) CleanupFiles(
 	ctx context.Context,
 	tracer trace.Tracer,
+	keepInstanceDir bool,
 ) error {
 	childCtx, childSpan := tracer.Start(ctx, "cleanup-env-instance",
 		trace.WithAttributes(
@@ -278,18 +280,20 @@ func (config *Config) CleanupFiles(
 	defer childSpan.End()
 	var finalErr error
 
-	err := os.RemoveAll(config.EnvInstancePath())
-	if err != nil {
-		errMsg := fmt.Errorf("error deleting env instance files: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		finalErr = errors.Join(finalErr, errMsg)
-	} else {
-		// TODO: Check the socket?
-		telemetry.ReportEvent(childCtx, "removed all env instance files")
+	if !keepInstanceDir {
+		err := os.RemoveAll(config.EnvInstancePath())
+		if err != nil {
+			errMsg := fmt.Errorf("error deleting env instance files: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
+			finalErr = errors.Join(finalErr, errMsg)
+		} else {
+			// TODO: Check the socket?
+			telemetry.ReportEvent(childCtx, "removed all env instance files")
+		}
 	}
 
 	// Remove socket
-	err = os.Remove(config.SocketPath)
+	err := os.Remove(config.SocketPath)
 	if err != nil {
 		errMsg := fmt.Errorf("error deleting socket: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
