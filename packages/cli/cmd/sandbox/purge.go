@@ -42,7 +42,7 @@ func purgeSandbox(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot get orchestrator port from args: %w", err)
 	}
-	client, err := lib.NewOrchestratorClient(ip, port)
+	client, err := lib.NewOrchestratorSbxClient(ip, port)
 	if err != nil {
 		return err
 	}
@@ -51,14 +51,9 @@ func purgeSandbox(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	req := &orchestrator.SandboxPurgeRequest{PurgeAll: purgeAll, SandboxIDs: args}
-	response, err := client.Purge(context.Background(), req)
-	if err != nil {
+	if _, err = client.Purge(context.Background(), req); err != nil {
 		return fmt.Errorf("purge failed: %w", err)
 	}
-	if response.Success {
-		fmt.Printf("purge succeed, msg: %v", response.Msg)
-	} else {
-		fmt.Printf("purge does not succeed, msg: %v", response.Msg)
-	}
+	fmt.Println("purge succeed")
 	return nil
 }

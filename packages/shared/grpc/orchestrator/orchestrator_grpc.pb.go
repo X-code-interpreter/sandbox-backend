@@ -50,7 +50,7 @@ type SandboxClient interface {
 	// Purge will be invoked in rare case. typically when orchestrator crashes
 	// and forget to cleanup the sandbox. So the client can call this method
 	// to purge the orphan sandbox manually
-	Purge(ctx context.Context, in *SandboxPurgeRequest, opts ...grpc.CallOption) (*SandboxPurgeResponse, error)
+	Purge(ctx context.Context, in *SandboxPurgeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type sandboxClient struct {
@@ -121,9 +121,9 @@ func (c *sandboxClient) Search(ctx context.Context, in *SandboxSearchRequest, op
 	return out, nil
 }
 
-func (c *sandboxClient) Purge(ctx context.Context, in *SandboxPurgeRequest, opts ...grpc.CallOption) (*SandboxPurgeResponse, error) {
+func (c *sandboxClient) Purge(ctx context.Context, in *SandboxPurgeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SandboxPurgeResponse)
+	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, Sandbox_Purge_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -152,7 +152,7 @@ type SandboxServer interface {
 	// Purge will be invoked in rare case. typically when orchestrator crashes
 	// and forget to cleanup the sandbox. So the client can call this method
 	// to purge the orphan sandbox manually
-	Purge(context.Context, *SandboxPurgeRequest) (*SandboxPurgeResponse, error)
+	Purge(context.Context, *SandboxPurgeRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedSandboxServer()
 }
 
@@ -181,7 +181,7 @@ func (UnimplementedSandboxServer) Snapshot(context.Context, *SandboxSnapshotRequ
 func (UnimplementedSandboxServer) Search(context.Context, *SandboxSearchRequest) (*SandboxSearchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Search not implemented")
 }
-func (UnimplementedSandboxServer) Purge(context.Context, *SandboxPurgeRequest) (*SandboxPurgeResponse, error) {
+func (UnimplementedSandboxServer) Purge(context.Context, *SandboxPurgeRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Purge not implemented")
 }
 func (UnimplementedSandboxServer) mustEmbedUnimplementedSandboxServer() {}
@@ -365,6 +365,146 @@ var Sandbox_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Purge",
 			Handler:    _Sandbox_Purge_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "orchestrator.proto",
+}
+
+const (
+	HostManage_RecreateCgroup_FullMethodName  = "/HostManage/RecreateCgroup"
+	HostManage_CleanNetworkEnv_FullMethodName = "/HostManage/CleanNetworkEnv"
+)
+
+// HostManageClient is the client API for HostManage service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type HostManageClient interface {
+	RecreateCgroup(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	CleanNetworkEnv(ctx context.Context, in *HostManageCleanNetworkEnvRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+}
+
+type hostManageClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewHostManageClient(cc grpc.ClientConnInterface) HostManageClient {
+	return &hostManageClient{cc}
+}
+
+func (c *hostManageClient) RecreateCgroup(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, HostManage_RecreateCgroup_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostManageClient) CleanNetworkEnv(ctx context.Context, in *HostManageCleanNetworkEnvRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, HostManage_CleanNetworkEnv_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// HostManageServer is the server API for HostManage service.
+// All implementations must embed UnimplementedHostManageServer
+// for forward compatibility.
+type HostManageServer interface {
+	RecreateCgroup(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	CleanNetworkEnv(context.Context, *HostManageCleanNetworkEnvRequest) (*emptypb.Empty, error)
+	mustEmbedUnimplementedHostManageServer()
+}
+
+// UnimplementedHostManageServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedHostManageServer struct{}
+
+func (UnimplementedHostManageServer) RecreateCgroup(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecreateCgroup not implemented")
+}
+func (UnimplementedHostManageServer) CleanNetworkEnv(context.Context, *HostManageCleanNetworkEnvRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CleanNetworkEnv not implemented")
+}
+func (UnimplementedHostManageServer) mustEmbedUnimplementedHostManageServer() {}
+func (UnimplementedHostManageServer) testEmbeddedByValue()                    {}
+
+// UnsafeHostManageServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to HostManageServer will
+// result in compilation errors.
+type UnsafeHostManageServer interface {
+	mustEmbedUnimplementedHostManageServer()
+}
+
+func RegisterHostManageServer(s grpc.ServiceRegistrar, srv HostManageServer) {
+	// If the following call pancis, it indicates UnimplementedHostManageServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&HostManage_ServiceDesc, srv)
+}
+
+func _HostManage_RecreateCgroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostManageServer).RecreateCgroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostManage_RecreateCgroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostManageServer).RecreateCgroup(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostManage_CleanNetworkEnv_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HostManageCleanNetworkEnvRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostManageServer).CleanNetworkEnv(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostManage_CleanNetworkEnv_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostManageServer).CleanNetworkEnv(ctx, req.(*HostManageCleanNetworkEnvRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// HostManage_ServiceDesc is the grpc.ServiceDesc for HostManage service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var HostManage_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "HostManage",
+	HandlerType: (*HostManageServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RecreateCgroup",
+			Handler:    _HostManage_RecreateCgroup_Handler,
+		},
+		{
+			MethodName: "CleanNetworkEnv",
+			Handler:    _HostManage_CleanNetworkEnv_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

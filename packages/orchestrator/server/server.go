@@ -32,10 +32,10 @@ import (
 // scale of data
 type server struct {
 	orchestrator.UnsafeSandboxServer
+	orchestrator.UnsafeHostManageServer
 	mu         sync.Mutex
 	sandboxes  map[string]*sandbox.Sandbox
-	dns        *network.DNS
-	netManager *network.NetworkManager
+	netManager *sandbox.NetworkManager
 	tracer     trace.Tracer
 	metric     *serverMetric
 }
@@ -66,14 +66,14 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 	}
 
 	s := server{
-		dns:        dns,
 		sandboxes:  make(map[string]*sandbox.Sandbox),
-		netManager: network.NewNetworkManager(),
+		netManager: sandbox.NewNetworkManager(dns),
 		tracer:     otel.Tracer(constants.ServiceName),
 		metric:     metric,
 	}
 
 	orchestrator.RegisterSandboxServer(grpcSrv, &s)
+	orchestrator.RegisterHostManageServer(grpcSrv, &s)
 	return grpcSrv, func() { s.shutdown() }, nil
 }
 
@@ -119,6 +119,8 @@ func (s *server) shutdown() {
 			telemetry.ReportError(ctx, errMsg, attribute.String("sandbox.id", sbx.SandboxID()))
 		}
 	}
+
+	s.netManager.Cleanup(ctx)
 }
 
 var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, sandbox.EnvInstancesDirName))
@@ -129,7 +131,6 @@ var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, 
 // This method will also make sure that there is at most one process matches the sandboxID.
 func getOrphanProcess(sandboxID string) (*process.Process, error) {
 	var res *process.Process
-	netNsName := network.GetFcNetNsName(sandboxID)
 	processes, err := process.Processes()
 	if err != nil {
 		return res, fmt.Errorf("cannot get processes on orchestrator: %w", err)
@@ -141,8 +142,9 @@ func getOrphanProcess(sandboxID string) (*process.Process, error) {
 			continue
 		}
 		if strings.HasPrefix(cmdline, "unshare") &&
+			strings.Contains(cmdline, "ip netns exec") &&
 			(strings.Contains(cmdline, constants.FcBinaryName) || strings.Contains(cmdline, constants.ChBinaryName)) &&
-			strings.Contains(cmdline, fmt.Sprintf("ip netns exec %s", netNsName)) {
+			strings.Contains(cmdline, sandboxID) {
 			if res != nil {
 				return nil, fmt.Errorf("find more than one process match sandbox id %s", sandboxID)
 			}
@@ -170,8 +172,11 @@ func parseEnvIdFromOrphanProcess(proc *process.Process) (string, error) {
 	return res, nil
 }
 
-func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
-	var finalErr error
+func (s *server) purgeOne(ctx context.Context, sandboxInfo *orchestrator.SandboxInfo) error {
+	var (
+		finalErr  error
+		sandboxID = sandboxInfo.SandboxID
+	)
 	// Similar to (*Sandbox).cleanupAfterFCStop()
 	// 1. kill process
 	envID, err := func() (envID string, err error) {
@@ -203,29 +208,25 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 	// 2. cleanup network
 	err = func() error {
 		var finalErr error
-		netEnvInfo, err := s.netManager.SearchNetworkEnvByID(ctx, s.tracer, sandboxID)
-		if err != nil {
-			err := fmt.Errorf("search fc network failed: %w", err)
-			telemetry.ReportError(ctx, err)
-			return err
-		}
-		if err := netEnvInfo.DeleteNetns(); err != nil {
+		netEnv := network.NewNetworkEnv(*sandboxInfo.NetworkIdx)
+		sbxNetwork := network.NewSandboxNetwork(netEnv, sandboxID)
+		if err := sbxNetwork.DeleteNetns(); err != nil {
 			telemetry.ReportError(ctx, err)
 			finalErr = errors.Join(finalErr, err)
 		}
-		if err := netEnvInfo.DeleteHostVethDev(); err != nil {
+		if err := sbxNetwork.DeleteHostVethDev(); err != nil {
 			telemetry.ReportError(ctx, err)
 			finalErr = errors.Join(finalErr, err)
 		}
-		if err := netEnvInfo.DeleteHostIptables(); err != nil {
+		if err := sbxNetwork.DeleteHostIptables(); err != nil {
 			telemetry.ReportError(ctx, err)
 			finalErr = errors.Join(finalErr, err)
 		}
-		if err := netEnvInfo.DeleteHostRoute(); err != nil {
+		if err := sbxNetwork.DeleteHostRoute(); err != nil {
 			telemetry.ReportError(ctx, err)
 			finalErr = errors.Join(finalErr, err)
 		}
-		if err := netEnvInfo.DeleteDNSEntry(s.dns); err != nil {
+		if err := s.netManager.DeleteDNSEntry(sandboxID); err != nil {
 			telemetry.ReportError(ctx, err)
 			finalErr = errors.Join(finalErr, err)
 		}
@@ -239,7 +240,6 @@ func (s *server) purgeOne(ctx context.Context, sandboxID string) error {
 
 	// 3. cleanup env
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
-	// so skip firecrackerBinaryPath args
 	err = func() error {
 		env, err := sandbox.NewSandboxConfig(ctx, &orchestrator.SandboxCreateRequest{
 			// only this two field is enough to purge

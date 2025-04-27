@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/cli/cmd/cgroup"
+	"github.com/X-code-interpreter/sandbox-backend/packages/cli/cmd/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/cli/cmd/sandbox"
 	"github.com/spf13/cobra"
 )
@@ -49,6 +50,7 @@ func init() {
 	rootCmd.AddCommand(
 		sandbox.NewSandboxCommand(),
 		cgroup.NewCgroupCommand(),
+		network.NewNetworkCommand(),
 	)
 }
 

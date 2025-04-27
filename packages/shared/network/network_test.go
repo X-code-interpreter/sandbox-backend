@@ -1,7 +1,6 @@
 package network
 
 import (
-	"fmt"
 	"net"
 	"runtime/debug"
 	"testing"
@@ -16,13 +15,10 @@ func assert(t *testing.T, res bool) {
 }
 
 func TestFcNetwork(t *testing.T) {
-	nm := NewNetworkManager()
-	var fcNets []*NetworkEnvInfo
+	var fcNets []*NetworkEnv
 	for i := 0; i < 5000; i++ {
-		id := fmt.Sprintf("test-%d", i)
-		fcNet, err := nm.NewNetworkEnvInfo(id)
-		assert(t, err == nil)
-		fcNets = append(fcNets, fcNet)
+		netEnv := NewNetworkEnv(int64(i))
+		fcNets = append(fcNets, &netEnv)
 	}
 
 	hostClonedIps := make(map[string]struct{})

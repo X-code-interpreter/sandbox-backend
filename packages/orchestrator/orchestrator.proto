@@ -21,7 +21,8 @@ message SandboxInfo {
   optional string templateID = 2;
   optional string kernelVersion = 3;
   optional uint32 pid = 4;
-  optional int64 fcNetworkIdx = 5;
+  // internal network index
+  optional int64 networkIdx = 5;
   optional string privateIP = 6;
   optional google.protobuf.Timestamp startTime = 7;
   optional bool enableDiffSnapshots = 8;
@@ -86,11 +87,6 @@ message SandboxPurgeRequest {
   repeated string SandboxIDs = 2;
 }
 
-message SandboxPurgeResponse {
-  bool success = 1;
-  string msg = 2;
-}
-
 // Interface exported by the server.
 service Sandbox {
   // Create is a gRPC service that creates a new sandbox.
@@ -110,5 +106,12 @@ service Sandbox {
   // Purge will be invoked in rare case. typically when orchestrator crashes
   // and forget to cleanup the sandbox. So the client can call this method
   // to purge the orphan sandbox manually
-  rpc Purge(SandboxPurgeRequest) returns (SandboxPurgeResponse);
+  rpc Purge(SandboxPurgeRequest) returns (google.protobuf.Empty);
+}
+
+message HostManageCleanNetworkEnvRequest { repeated int64 NetworkIDs = 1; }
+
+service HostManage {
+  rpc RecreateCgroup(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc CleanNetworkEnv(HostManageCleanNetworkEnvRequest) returns (google.protobuf.Empty);
 }

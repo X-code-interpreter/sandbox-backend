@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -19,11 +21,14 @@ import (
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 )
 
 var _ orchestrator.SandboxServer = (*server)(nil)
+var _ orchestrator.HostManageServer = (*server)(nil)
 
 var SandboxNotFound = errors.New("sandbox not found")
 
@@ -36,7 +41,7 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	)
 
 	// TODO(huang-jl): support attach metadata to sandbox
-	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, s.dns, req, s.netManager)
+	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, req, s.netManager)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create sandbox: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -81,6 +86,13 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		// TODO(huang-jl): do not sleep
 		// Wait before removing all resources (see defers above)
 		time.Sleep(1 * time.Second)
+
+		// after wait, we assue the vmm process has already been killed and cleaned
+		// so we can reuse the sandbox network
+		if err := s.netManager.RecycleSandboxNetwork(ctx, sbx.Net); err != nil {
+			errMsg := fmt.Errorf("recycle sandbox network failed: %w", err)
+			telemetry.ReportError(ctx, errMsg)
+		}
 	}()
 
 	s.InsertSandbox(sbx)
@@ -113,6 +125,52 @@ func (s *server) List(ctx context.Context, req *orchestrator.SandboxListRequest)
 }
 
 var sandboxIDRegExp = regexp.MustCompile(fmt.Sprintf(`/%s/([0-9a-zA-Z-]+)`, sandbox.EnvInstancesDirName))
+var netNsNameRegExp = regexp.MustCompile(`ip netns exec ([0-9a-zA-Z-]+)`)
+
+func (s *server) getSandboxInfoFromProc(ctx context.Context, proc *process.Process) *orchestrator.SandboxInfo {
+	cmdline, err := proc.Cmdline()
+	if err != nil {
+		return nil
+	}
+	match := sandboxIDRegExp.FindStringSubmatch(cmdline)
+	if match == nil {
+		err := fmt.Errorf("cannot get sandbox id from cmdline")
+		telemetry.ReportCriticalError(ctx, err)
+		return nil
+	}
+	sandboxID := match[1]
+	match = netNsNameRegExp.FindStringSubmatch(cmdline)
+	if match == nil {
+		err := fmt.Errorf("cannot get netns name from cmdline")
+		telemetry.ReportCriticalError(ctx, err)
+		return nil
+	}
+	netNsName := match[1]
+	netEnv, err := s.netManager.SearchNetwork(ctx, s.tracer, netNsName)
+	if err != nil {
+		// we find the sandbox but cannot get the Network
+		return nil
+	}
+	templateID, err := parseEnvIdFromOrphanProcess(proc)
+	if err != nil {
+		telemetry.ReportCriticalError(ctx, err)
+		return nil
+	}
+	// for orphan sandbox, we only populate privateIP and sandboxID
+	// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
+	// latter purge. But purge is a low-frequent event, so it is fine.
+	sbxNetworkIdx := netEnv.NetworkIdx()
+	sbxPrivateIP := netEnv.HostClonedIP()
+	sbxPid := uint32(proc.Pid)
+	return &orchestrator.SandboxInfo{
+		SandboxID:  sandboxID,
+		Pid:        &sbxPid,
+		NetworkIdx: &sbxNetworkIdx,
+		PrivateIP:  &sbxPrivateIP,
+		TemplateID: &templateID,
+		State:      orchestrator.SandboxState_ORPHAN,
+	}
+}
 
 func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListResponse, error) {
 	processes, err := process.Processes()
@@ -133,37 +191,14 @@ func (s *server) listOrphan(ctx context.Context) (*orchestrator.SandboxListRespo
 			!strings.Contains(cmdline, constants.ChBinaryName) {
 			continue
 		}
-		if !strings.Contains(cmdline, "mount --bind") {
+		if !strings.Contains(cmdline, "ip netns exec") {
 			continue
 		}
-		match := sandboxIDRegExp.FindStringSubmatch(cmdline)
-		if match == nil {
+		info := s.getSandboxInfoFromProc(ctx, process)
+		if info == nil {
 			continue
 		}
-		sandboxID := match[1]
-		netEnvInfo, err := s.netManager.SearchNetworkEnvByID(ctx, s.tracer, sandboxID)
-		if err != nil {
-			// we find the sandbox but cannot get the fcNetwork
-			return nil, fmt.Errorf("cannot get fc network of orphan process: %w", err)
-		}
-		templateID, err := parseEnvIdFromOrphanProcess(process)
-		if err != nil {
-			return nil, fmt.Errorf("cannot parse env id of orphan process: %w", err)
-		}
-		// for orphan sandbox, we only populate privateIP and sandboxID
-		// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
-		// latter purge. But purge is a low-frequent event, so it is fine.
-		sbxFcNetworkIdx := netEnvInfo.NetworkEnvIdx()
-		sbxPrivateIP := netEnvInfo.HostClonedIP()
-		sbxPid := uint32(process.Pid)
-		results = append(results, &orchestrator.SandboxInfo{
-			SandboxID:    sandboxID,
-			Pid:          &sbxPid,
-			FcNetworkIdx: &sbxFcNetworkIdx,
-			PrivateIP:    &sbxPrivateIP,
-			TemplateID:   &templateID,
-			State:        orchestrator.SandboxState_ORPHAN,
-		})
+		results = append(results, info)
 	}
 	return &orchestrator.SandboxListResponse{
 		Sandboxes: results,
@@ -286,45 +321,45 @@ func (s *server) Search(ctx context.Context, req *orchestrator.SandboxSearchRequ
 	}, nil
 }
 
-func (s *server) Purge(ctx context.Context, req *orchestrator.SandboxPurgeRequest) (*orchestrator.SandboxPurgeResponse, error) {
+func (s *server) Purge(ctx context.Context, req *orchestrator.SandboxPurgeRequest) (*empty.Empty, error) {
 	childCtx, childSpan := s.tracer.Start(ctx, "grpc-purge", trace.WithAttributes(
 		attribute.Bool("purge-all", req.PurgeAll),
 		attribute.StringSlice("sandbox-ids", req.SandboxIDs),
 	))
 	defer childSpan.End()
 	var (
-		finalErr     error
-		sandboxesIDs = req.SandboxIDs
+		finalErr  error
+		sandboxes []*orchestrator.SandboxInfo
 	)
 	if req.PurgeAll {
 		orphanSandboxes, err := s.listOrphan(childCtx)
 		if err != nil {
-			return &orchestrator.SandboxPurgeResponse{
-				Success: false,
-				Msg:     err.Error(),
-			}, nil
-		} else {
-			for _, sbx := range orphanSandboxes.Sandboxes {
-				sandboxesIDs = append(sandboxesIDs, sbx.SandboxID)
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		sandboxes = orphanSandboxes.Sandboxes
+	} else {
+		for _, sandboxID := range req.SandboxIDs {
+			process, err := getOrphanProcess(sandboxID)
+			if err != nil {
+				return nil, status.Error(codes.NotFound, err.Error())
 			}
+			info := s.getSandboxInfoFromProc(ctx, process)
+			if info == nil {
+				return nil, status.Error(codes.NotFound, "get sandbox info failed")
+			}
+			sandboxes = append(sandboxes, info)
 		}
 	}
 	// start to purge
-	for _, sandboxID := range sandboxesIDs {
-		if err := s.purgeOne(childCtx, sandboxID); err != nil {
+	for _, info := range sandboxes {
+		if err := s.purgeOne(childCtx, info); err != nil {
 			finalErr = errors.Join(finalErr, err)
 		}
 	}
 	if finalErr != nil {
-		return &orchestrator.SandboxPurgeResponse{
-			Success: false,
-			Msg:     finalErr.Error(),
-		}, nil
+		return nil, status.Error(codes.NotFound, finalErr.Error())
 	} else {
-		return &orchestrator.SandboxPurgeResponse{
-			Success: true,
-			Msg:     "",
-		}, nil
+		return &empty.Empty{}, nil
 	}
 }
 
@@ -353,4 +388,42 @@ func (s *server) Snapshot(ctx context.Context, req *orchestrator.SandboxSnapshot
 	return &orchestrator.SandboxSnapshotResponse{
 		Path: sbx.Config.EnvInstanceCreateSnapshotPath(),
 	}, nil
+}
+
+func (s *server) RecreateCgroup(ctx context.Context, _ *empty.Empty) (*empty.Empty, error) {
+	cgroupParentPath := filepath.Join(consts.CgroupfsPath, consts.CgroupParentName)
+	// first remove, and then recreate
+	if err := os.Remove(cgroupParentPath); err != nil {
+		return nil, status.Errorf(codes.Internal, "remove cgroup failed: %s", err.Error())
+	}
+	if err := sandbox.CreateSandboxCgroup(cgroupParentPath); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &empty.Empty{}, nil
+}
+
+func (s *server) CleanNetworkEnv(ctx context.Context, req *orchestrator.HostManageCleanNetworkEnvRequest) (*empty.Empty, error) {
+	var finalErr error
+	for _, networkIdx := range req.GetNetworkIDs() {
+		netEnv := network.NewNetworkEnv(networkIdx)
+		// sandbox id is useless here
+		net := network.NewSandboxNetwork(netEnv, "")
+		if err := net.DeleteNetns(); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := net.DeleteHostVethDev(); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := net.DeleteHostIptables(); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
+		if err := net.DeleteHostRoute(); err != nil {
+			finalErr = errors.Join(finalErr, err)
+		}
+		s.netManager.DNS().RemoveAddress(net.HostClonedIP())
+	}
+	if finalErr != nil {
+		return nil, status.Error(codes.Internal, finalErr.Error())
+	}
+	return &empty.Empty{}, nil
 }

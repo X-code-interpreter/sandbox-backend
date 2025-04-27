@@ -58,7 +58,7 @@ func snapshot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot get delete from args: %w", err)
 	}
-	client, err := lib.NewOrchestratorClient(ip, port)
+	client, err := lib.NewOrchestratorSbxClient(ip, port)
 	if err != nil {
 		return err
 	}

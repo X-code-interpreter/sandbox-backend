@@ -45,7 +45,7 @@ type Snapshot struct {
 func (s *Snapshot) startVMM(
 	ctx context.Context,
 	tracer trace.Tracer,
-	network *network.NetworkEnvInfo,
+	network *network.SandboxNetwork,
 	env *Env,
 ) error {
 	childCtx, childSpan := tracer.Start(ctx, "start-fc-process")
@@ -306,7 +306,7 @@ func NewSnapshot(
 	ctx context.Context,
 	tracer trace.Tracer,
 	env *Env,
-	network *network.NetworkEnvInfo,
+	network *network.SandboxNetwork,
 ) (*Snapshot, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-snapshot")
 	defer childSpan.End()

@@ -41,7 +41,7 @@ func NewListCommand() *cobra.Command {
 
 func lsAll(ip string, port int) error {
 	slog.Info("start list all sandbox")
-	client, err := lib.NewOrchestratorClient(ip, port)
+	client, err := lib.NewOrchestratorSbxClient(ip, port)
 	if err != nil {
 		return err
 	}
@@ -57,7 +57,7 @@ func lsAll(ip string, port int) error {
 
 func lsOrphan(ip string, port int) error {
 	slog.Info("start list orphan sandbox")
-	client, err := lib.NewOrchestratorClient(ip, port)
+	client, err := lib.NewOrchestratorSbxClient(ip, port)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func lsOrphan(ip string, port int) error {
 }
 
 func lsSubset(ip string, port int, sandboxIDs ...string) error {
-	client, err := lib.NewOrchestratorClient(ip, port)
+	client, err := lib.NewOrchestratorSbxClient(ip, port)
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -35,11 +34,11 @@ var httpClient = http.Client{
 }
 
 type Sandbox struct {
-	mu         sync.Mutex
-	vmm        vmm
-	Config     *Config
-	NetEnvInfo *network.NetworkEnvInfo
-	StartAt    time.Time
+	mu      sync.Mutex
+	vmm     vmm
+	Config  *Config
+	Net     *network.SandboxNetwork
+	StartAt time.Time
 
 	waitOnce  sync.Once
 	cleanOnce sync.Once
@@ -49,72 +48,11 @@ type Sandbox struct {
 	State orchestrator.SandboxState
 }
 
-func setupNetEnv(
-	ctx context.Context,
-	tracer trace.Tracer,
-	info *network.NetworkEnvInfo,
-	dns *network.DNS,
-) error {
-	childCtx, childSpan := tracer.Start(ctx, "setup-net-env", trace.WithAttributes(
-		attribute.Int64("net.index", info.NetworkEnvIdx()),
-		attribute.String("sandbox.veth.cidr", info.VethCIDR()),
-		attribute.String("sandbox.vpeer.cidr", info.VpeerCIDR()),
-		attribute.String("sandbox.tap.cidr", info.TapCIDR()),
-		attribute.String("sandbox.host_cloned.cidr", info.HostClonedCIDR()),
-		attribute.String("sandbox.guest.ip", info.GuestIP()),
-		attribute.String("sandbox.tap.ip", info.TapIP()),
-		attribute.String("sandbox.tap.name", info.TapName()),
-		attribute.String("sandbox.veth.name", info.VethName()),
-		attribute.String("sandbox.vpeer.name", info.VpeerName()),
-		attribute.String("sandbox.namespace.id", info.NetNsName()),
-	))
-	defer childSpan.End()
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	env, err := info.InitEnv()
-	if err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	defer env.Exit()
-
-	// first we are in guest ns
-	if err := env.SetupNsTapDev(); err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	if err := env.SetupNsLoDev(); err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	if err := env.SetupVethPair(); err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	if err := env.SetGuestNs(); err != nil {
-		errMsg := fmt.Errorf("change to guest ns failed: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		return errMsg
-	}
-	if err := env.SetupIptablesAndRoute(); err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	if err := env.CreateDNSEntry(dns); err != nil {
-		telemetry.ReportCriticalError(childCtx, err)
-		return err
-	}
-	return nil
-}
-
 func NewSandbox(
 	ctx context.Context,
 	tracer trace.Tracer,
-	dns *network.DNS,
 	req *orchestrator.SandboxCreateRequest,
-	nm *network.NetworkManager,
+	nm *NetworkManager,
 ) (*Sandbox, error) {
 	childCtx, childSpan := tracer.Start(
 		ctx,
@@ -123,17 +61,16 @@ func NewSandbox(
 	)
 	defer childSpan.End()
 
-	netEnvInfo, err := nm.NewNetworkEnvInfo(req.SandboxID)
+	net, err := nm.GetSandboxNetwork(ctx, tracer, req.SandboxID)
 	if err != nil {
-		errMsg := fmt.Errorf("failed to create fc network: %w", err)
+		errMsg := fmt.Errorf("failed to get sandbox network: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 
 		return nil, errMsg
 	}
-
 	defer func() {
 		if err != nil {
-			ntErr := netEnvInfo.Cleanup(childCtx)
+			ntErr := net.Cleanup(childCtx)
 			if ntErr != nil {
 				errMsg := fmt.Errorf("error cleanup network env after failed sandbox start: %w", ntErr)
 				telemetry.ReportError(childCtx, errMsg)
@@ -142,18 +79,8 @@ func NewSandbox(
 			}
 		}
 	}()
-	err = setupNetEnv(childCtx, tracer, netEnvInfo, dns)
-	if err != nil {
-		errMsg := fmt.Errorf("failed to setup fc network: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
 
-		return nil, errMsg
-	}
-
-	config, err := NewSandboxConfig(
-		childCtx,
-		req,
-	)
+	config, err := NewSandboxConfig(childCtx, req)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to assemble env files info for FC: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -186,7 +113,7 @@ func NewSandbox(
 		childCtx,
 		tracer,
 		config,
-		netEnvInfo,
+		net,
 	)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create vmm: %w", err)
@@ -195,11 +122,11 @@ func NewSandbox(
 	}
 
 	sbx := &Sandbox{
-		vmm:        vmm,
-		Config:     config,
-		NetEnvInfo: netEnvInfo,
-		StartAt:    time.Now(),
-		State:      orchestrator.SandboxState_RUNNING,
+		vmm:     vmm,
+		Config:  config,
+		Net:     net,
+		StartAt: time.Now(),
+		State:   orchestrator.SandboxState_RUNNING,
 	}
 
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
@@ -250,7 +177,7 @@ syncLoop:
 }
 
 func (s *Sandbox) syncClock(ctx context.Context) error {
-	address := fmt.Sprintf("http://%s:%d/sync", s.NetEnvInfo.HostClonedIP(), consts.DefaultEnvdServerPort)
+	address := fmt.Sprintf("http://%s:%d/sync", s.Net.HostClonedIP(), consts.DefaultEnvdServerPort)
 
 	request, err := http.NewRequestWithContext(ctx, "POST", address, nil)
 	if err != nil {
@@ -314,18 +241,20 @@ func (s *Sandbox) cleanupAfterFCStop(
 	}
 	s.State = orchestrator.SandboxState_CLEANNING
 
-	{
-		ctx, span := tracer.Start(childCtx, "cleanup-net")
-		err = s.NetEnvInfo.Cleanup(ctx)
-		span.End()
-		if err != nil {
-			errMsg := fmt.Errorf("cannot remove network when destroying task: %w", err)
-			telemetry.ReportCriticalError(childCtx, errMsg)
-			finalErr = errors.Join(finalErr, err)
-		} else {
-			telemetry.ReportEvent(childCtx, "removed network")
-		}
-	}
+	// NOTE(huang-jl): we do not cleanup network here,
+	// we try to reuse the network instance.
+	// {
+	// 	ctx, span := tracer.Start(childCtx, "cleanup-net")
+	// 	err = s.Net.Cleanup(ctx)
+	// 	span.End()
+	// 	if err != nil {
+	// 		errMsg := fmt.Errorf("cannot remove network when destroying task: %w", err)
+	// 		telemetry.ReportCriticalError(childCtx, errMsg)
+	// 		finalErr = errors.Join(finalErr, err)
+	// 	} else {
+	// 		telemetry.ReportEvent(childCtx, "removed network")
+	// 	}
+	// }
 
 	err = s.Config.CleanupFiles(childCtx, tracer, keepInstanceDir)
 	if err != nil {
@@ -477,15 +406,15 @@ func (s *Sandbox) GetSandboxInfo() orchestrator.SandboxInfo {
 	// This is a read only function. Thus, we do not get lock here.
 	// Or else, it might conflict with other function (e.g., cleanup).
 	sbxPid := s.getPid()
-	sbxFcNetworkIdx := s.NetEnvInfo.NetworkEnvIdx()
-	sbxPrivateIp := s.NetEnvInfo.HostClonedIP()
+	sbxNetworkIdx := s.Net.NetworkIdx()
+	sbxPrivateIp := s.Net.HostClonedIP()
 	sbxDiffSnapshot := s.Config.EnableDiffSnapshot
 	return orchestrator.SandboxInfo{
 		SandboxID:           s.SandboxID(),
 		Pid:                 &sbxPid,
 		TemplateID:          &s.Config.EnvID,
 		KernelVersion:       &s.Config.KernelVersion,
-		FcNetworkIdx:        &sbxFcNetworkIdx,
+		NetworkIdx:          &sbxNetworkIdx,
 		PrivateIP:           &sbxPrivateIp,
 		EnableDiffSnapshots: &sbxDiffSnapshot,
 		StartTime:           timestamppb.New(s.StartAt),

@@ -5,6 +5,7 @@ package cgroup
 
 import (
 	"github.com/spf13/cobra"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 )
 
 func NewCgroupCommand() *cobra.Command {
@@ -18,6 +19,8 @@ func NewCgroupCommand() *cobra.Command {
   Note this command should only be executed on the same machine as the orchestrator.
   `,
 	}
+	cgroupCmd.PersistentFlags().StringP("ip", "i", "127.0.0.1", "the ip address of the backend orchestrator")
+	cgroupCmd.PersistentFlags().IntP("port", "p", consts.DefaultOrchestratorPort, "the ip address of the backend orchestrator")
 
 	cgroupCmd.AddCommand(
 		NewRecreateCommand(),

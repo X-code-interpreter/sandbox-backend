@@ -19,7 +19,7 @@ func getSocketPath(sandboxID string) (string, error) {
 	if checkExistsAndDir(os.TempDir()) {
 		dir = os.TempDir()
 	} else {
-		errMsg := fmt.Errorf("unable to find a location for firecracker socket")
+		errMsg := fmt.Errorf("unable to find a location for vmm socket")
 		return "", errMsg
 	}
 

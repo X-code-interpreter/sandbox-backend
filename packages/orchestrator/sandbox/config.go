@@ -30,6 +30,32 @@ const (
 	socketWaitTimeout = 2 * time.Second
 )
 
+// @path: the path to cgroup (e.g., /sys/fs/cgroup/code-interpreter)
+func CreateSandboxCgroup(path string) error {
+	if err := utils.CreateDirAllIfNotExists(path, 0o755); err != nil {
+		return err
+	}
+	// enable all controllers in controllers into subtree_control
+	b, err := os.ReadFile(filepath.Join(path, "cgroup.controllers"))
+	if err != nil {
+		panic(fmt.Errorf("read cgroup.controllers in %s failed: %w", path, err))
+	}
+	controllers := strings.Fields(string(b))
+	for idx, c := range controllers {
+		controllers[idx] = "+" + c
+	}
+	f, err := os.OpenFile(filepath.Join(path, "cgroup.subtree_control"), os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open cgroup.subtree_control in %s failed: %w", path, err)
+	}
+	defer f.Close()
+	enableRequest := strings.Join(controllers, " ")
+	if _, err := f.WriteString(enableRequest); err != nil {
+		return fmt.Errorf("write %s to cgroup.subtree_control in %s failed: %w", enableRequest, path, err)
+	}
+	return nil
+}
+
 func init() {
 	// prometheus target path
 	if err := utils.CreateDirAllIfNotExists(constants.PrometheusTargetsPath, 0o755); err != nil {
@@ -38,26 +64,8 @@ func init() {
 
 	// parent cgroup path
 	cgroupParentPath := filepath.Join(consts.CgroupfsPath, consts.CgroupParentName)
-	if err := utils.CreateDirAllIfNotExists(cgroupParentPath, 0o755); err != nil {
+	if err := CreateSandboxCgroup(cgroupParentPath); err != nil {
 		panic(err)
-	}
-	// enable all controllers in controllers into subtree_control
-	b, err := os.ReadFile(filepath.Join(cgroupParentPath, "cgroup.controllers"))
-	if err != nil {
-		panic(fmt.Errorf("read cgroup.controllers in %s failed: %w", cgroupParentPath, err))
-	}
-	controllers := strings.Fields(string(b))
-	for idx, c := range controllers {
-		controllers[idx] = "+" + c
-	}
-	f, err := os.OpenFile(filepath.Join(cgroupParentPath, "cgroup.subtree_control"), os.O_WRONLY, 0)
-	if err != nil {
-		panic(fmt.Errorf("open cgroup.subtree_control in %s failed: %w", cgroupParentPath, err))
-	}
-	defer f.Close()
-	enableRequest := strings.Join(controllers, " ")
-	if _, err := f.WriteString(enableRequest); err != nil {
-		panic(fmt.Errorf("write %s to cgroup.subtree_control in %s failed: %w", enableRequest, cgroupParentPath, err))
 	}
 }
 

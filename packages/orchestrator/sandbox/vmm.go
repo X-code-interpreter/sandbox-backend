@@ -28,7 +28,7 @@ func newVmm(
 	ctx context.Context,
 	tracer trace.Tracer,
 	config *Config,
-	netEnvInfo *network.NetworkEnvInfo,
+	net *network.SandboxNetwork,
 ) (vmm, error) {
 	var vmm vmm
 
@@ -56,7 +56,7 @@ func newVmm(
 		config.KernelMountDirPath(),
 	)
 
-	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", netEnvInfo.NetNsName())
+	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", net.NetNsName())
 	var hypervisorCmd string
 	switch config.VmmType {
 	case template.FIRECRACKER:
@@ -97,8 +97,8 @@ func newVmm(
 		UseCgroupFD: true,
 	}
 
-	go utils.RedirectVmmOutput(vmmCtx, "firecracker stdout", cmdStdoutReader)
-	go utils.RedirectVmmOutput(vmmCtx, "firecracker stderr", cmdStderrReader)
+	go utils.RedirectVmmOutput(vmmCtx, "vmm stdout", cmdStdoutReader)
+	go utils.RedirectVmmOutput(vmmCtx, "vmm stderr", cmdStderrReader)
 
 	err = cmd.Start()
 	if err != nil {
@@ -120,7 +120,7 @@ func newVmm(
 		}
 		telemetry.ReportEvent(childCtx, "vmm process created fc socket")
 		vmm.Hypervisor = hypervisor.NewFirecracker(
-			getFcConfig(config, netEnvInfo, childSpan.SpanContext().TraceID().String()),
+			getFcConfig(config, net, childSpan.SpanContext().TraceID().String()),
 			client,
 		)
 	case template.CLOUDHYPERVISOR:
@@ -181,7 +181,7 @@ func (vmm vmm) stop(ctx context.Context, tracer trace.Tracer) error {
 }
 
 // This function must be called in order to recalim the
-// resouce related to firecracker (e.g., the process id)
+// resouce related to vmm (e.g., the process id)
 func (vmm vmm) wait() error {
 	// close the vmm span
 	if vmm.cmd == nil {
@@ -229,8 +229,8 @@ func (vmm vmm) snapshot(ctx context.Context, tracer trace.Tracer, dir string) er
 	return nil
 }
 
-func getFcConfig(config *Config, netEnvInfo *network.NetworkEnvInfo, traceID string) *hypervisor.FcConfig {
-	logCollectorAddr := fmt.Sprintf("http://%s:%d", netEnvInfo.VethIP(), consts.DefaultLogCollectorPort)
+func getFcConfig(config *Config, net *network.SandboxNetwork, traceID string) *hypervisor.FcConfig {
+	logCollectorAddr := fmt.Sprintf("http://%s:%d", net.VethIP(), consts.DefaultLogCollectorPort)
 	return &hypervisor.FcConfig{
 		VcpuCount:       config.VCpuCount,
 		MemoryMB:        config.MemoryMB,

@@ -20,7 +20,7 @@ func TestEnd2End(t *testing.T) {
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 
 	dns, err := network.NewDNS()
-	nm := network.NewNetworkManager()
+	nm := NewNetworkManager(dns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestEnd2End(t *testing.T) {
 		TemplateID: "default-code-interpreter",
 		SandboxID:  "test-end-2-end",
 	}
-	sandbox, err := NewSandbox(ctx, tracer, dns, req, nm)
+	sandbox, err := NewSandbox(ctx, tracer, req, nm)
 	if err != nil {
 		t.Fatal(err)
 	}
