@@ -22,7 +22,7 @@ type LogMeta struct {
 
 // make sure log dir already exists
 func init() {
-	if err := utils.MakeSureDir(consts.LogDiskDir); err != nil {
+	if err := utils.CreateDirAllIfNotExists(consts.LogDiskDir, 0o755); err != nil {
 		errMsg := fmt.Errorf("check log dir failed: %w", err)
 		panic(errMsg)
 	}

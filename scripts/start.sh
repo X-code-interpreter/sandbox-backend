@@ -25,7 +25,7 @@ function start_log_collecator() {
   pushd ${PKG_PATH}/log-collector
   echo "start to build log collector..."
   make
-  ./bin/log-collector &> /tmp/log-collector.log &
+  cgexec test ./bin/log-collector &> /tmp/log-collector.log &
   local pid=$!
   echo "log collector (pid ${pid}) log is in /tmp/log-collector.log"
   popd
@@ -36,7 +36,7 @@ function start_orchestrator() {
   pushd ${PKG_PATH}/orchestrator
   echo "start to build orchestrator..."
   make
-  ENVIRONMENT=prod ./bin/orchestrator &> /tmp/orchestrator.log &
+  ENVIRONMENT=prod cgexec test ./bin/orchestrator &> /tmp/orchestrator.log &
   local pid=$!
   echo "orchestrator (pid ${pid}) log is in /tmp/orchestrator.log"
   popd

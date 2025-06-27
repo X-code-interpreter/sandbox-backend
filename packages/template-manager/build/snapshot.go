@@ -351,7 +351,7 @@ func NewSnapshot(
 	time.Sleep(constants.WaitTimeForVmStart)
 	telemetry.ReportEvent(
 		childCtx,
-		"waited for fc to start",
+		"waited for sandbox to start",
 		attribute.Float64("seconds",
 			float64(constants.WaitTimeForVmStart/time.Second)),
 	)

@@ -61,7 +61,7 @@ func NewSandbox(
 	)
 	defer childSpan.End()
 
-	net, err := nm.GetSandboxNetwork(ctx, tracer, req.SandboxID)
+	net, err := nm.GetSandboxNetwork(childCtx, tracer, req.SandboxID)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to get sandbox network: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -132,7 +132,7 @@ func NewSandbox(
 	telemetry.ReportEvent(childCtx, "ensuring clock sync")
 	go func() {
 		bgCtx, span := tracer.Start(
-			trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(childCtx)),
+			context.Background(),
 			"sandbox-bg-task",
 			trace.WithAttributes(
 				attribute.String("sandbox.id", sbx.SandboxID()),

@@ -30,9 +30,9 @@ type SandboxNetworkWrapper struct {
 func (net *SandboxNetworkWrapper) SetState(state SandboxNetworkState) SandboxNetworkState {
 	net.mu.Lock()
 	defer net.mu.Unlock()
-	state = net.state
+	oldState := net.state
 	net.state = state
-	return state
+	return oldState
 }
 
 func (net *SandboxNetworkWrapper) MakeFree(ctx context.Context, m *NetworkManager) error {
@@ -132,7 +132,10 @@ func (m *NetworkManager) insertUsingNetwork(net *SandboxNetworkWrapper) error {
 	return nil
 }
 
+// When enable `Repurposable`, this will recycle it for later reuse.
+// when disable `Repurposable`, this will cleanup the network.
 func (m *NetworkManager) RecycleSandboxNetwork(ctx context.Context, net *network.SandboxNetwork) error {
+	var recycleMethod string
 	m.mu.Lock()
 	if net.NetworkIdx() >= m.nextID {
 		err := fmt.Errorf("found network idx %d, current max %d", net.NetworkIdx(), m.nextID-1)
@@ -143,14 +146,43 @@ func (m *NetworkManager) RecycleSandboxNetwork(ctx context.Context, net *network
 	wrapper := m.all[net.NetworkIdx()]
 	m.mu.Unlock()
 
-	if err := wrapper.MakeFree(ctx, m); err != nil {
-		return err
+	if constants.Repurposable {
+		// make it into free queue
+		if err := wrapper.MakeFree(ctx, m); err != nil {
+			return err
+		}
+		recycleMethod = "recycle"
+		m.mu.Lock()
+		m.free = append(m.free, wrapper.NetworkIdx())
+		m.mu.Unlock()
+	} else {
+		// cleanup it
+		recycleMethod = "cleanup"
+		oldState := wrapper.SetState(invalid)
+		switch oldState {
+		case invalid:
+			return fmt.Errorf("recycle invalid sandbox network (id = %d)", net.NetworkIdx())
+		case using:
+			// delete dns entry
+			if err := m.DeleteDNSEntry(net.SandboxID); err != nil {
+				errMsg := fmt.Errorf("delete dns entry failed when cleanup network manager: %w", err)
+				telemetry.ReportCriticalError(ctx, errMsg)
+			}
+		case free:
+		}
+		if err := wrapper.Cleanup(ctx); err != nil {
+			return err
+		}
+		// delete from map
+		m.mu.Lock()
+		delete(m.all, net.NetworkIdx())
+		m.mu.Unlock()
 	}
-	m.mu.Lock()
-	m.free = append(m.free, wrapper.NetworkIdx())
-	m.mu.Unlock()
 
-	telemetry.ReportEvent(ctx, "sandbox network recycled", attribute.Int64("network_idx", net.NetworkIdx()))
+	telemetry.ReportEvent(ctx, "sandbox network recycled",
+		attribute.Int64("network_idx", net.NetworkIdx()),
+		attribute.String("recycle_method", recycleMethod),
+	)
 	return nil
 }
 
@@ -174,7 +206,7 @@ func (m *NetworkManager) GetSandboxNetwork(
 		m.free = m.free[1:]
 		wrapper = m.all[idx]
 		m.mu.Unlock()
-		telemetry.ReportEvent(ctx, "reuse sandbox network", attribute.Int64("idx", idx))
+		telemetry.ReportEvent(childCtx, "reuse sandbox network", attribute.Int64("idx", idx))
 	} else {
 		// create a new from scratch
 		idx := m.nextID
@@ -183,11 +215,11 @@ func (m *NetworkManager) GetSandboxNetwork(
 		if idx > constants.MaxNetworkNumber {
 			return nil, fmt.Errorf("network instance number exceed the upper bound")
 		}
-		net, err := newSandboxNetwork(ctx, tracer, idx)
+		net, err := newSandboxNetwork(childCtx, tracer, idx)
 		if err != nil {
 			return nil, err
 		}
-		telemetry.ReportEvent(ctx, "create new sandbox network")
+		telemetry.ReportEvent(childCtx, "create new sandbox network")
 		wrapper = &SandboxNetworkWrapper{
 			SandboxNetwork: net,
 			state:          using,
@@ -199,7 +231,7 @@ func (m *NetworkManager) GetSandboxNetwork(
 
 	if err = m.CreateDNSEntry(wrapper.HostClonedIP(), sandboxID); err != nil {
 		errMsg := fmt.Errorf("create dns entry failed: %w", err)
-		telemetry.ReportCriticalError(ctx, errMsg)
+		telemetry.ReportCriticalError(childCtx, errMsg)
 		// we push it back for later reuse
 		m.mu.Lock()
 		m.free = append(m.free, wrapper.NetworkIdx())
@@ -263,7 +295,7 @@ func setupNetEnv(
 
 // Typically used to search network information for orphan sandbox.
 // For more, check orchestrator grpc about orphan sandbox.
-func (nm *NetworkManager) SearchNetwork(ctx context.Context, tracer trace.Tracer, netNsName string) (*network.NetworkEnv, error) {
+func (m *NetworkManager) SearchNetwork(ctx context.Context, tracer trace.Tracer, netNsName string) (*network.NetworkEnv, error) {
 	childCtx, childSpan := tracer.Start(ctx, "search-fc-network-by-id", trace.WithAttributes(
 		attribute.String("net_ns_name", netNsName),
 	))

@@ -1,13 +1,16 @@
 {
   "template": "default-sandbox",
   "startCmd": "",
-  "fcPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker",
-  "memMB": 2048,
-  "vcpu": 2,
+  "memMB": 1024,
+  "vcpu": 1,
   "diskMB": 5120,
-  "kernelVersion": "5.10.226",
+  "kernelVersion": "6.1.134",
   "hugePages": false,
   "dockerImg": "jialianghuang/default-sandbox:latest",
   "noPull": true,
-  "overlay": false
+  "overlay": false,
+  "vmmType": "firecracker",
+  "rootfsBuildMode": 0,
+  "kernelDebugOutput": false,
+  "hypervisorPath": "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker"
 }

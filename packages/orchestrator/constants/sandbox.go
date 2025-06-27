@@ -6,7 +6,8 @@ const (
 	FcBinaryName          = "firecracker"
 	FcBinaryPath          = "/root/codes/firecracker/build/cargo_target/x86_64-unknown-linux-musl/release/firecracker"
 	ChBinaryName          = "cloud-hypervisor"
-	ChBinaryPath          = "/root/codes/cloud-hypervisor/target/x86_64-unknown-linux-musl/release/cloud-hypervisor"
+	// ChBinaryPath          = "/root/codes/cloud-hypervisor/target/x86_64-unknown-linux-musl/release/cloud-hypervisor"
+	ChBinaryPath          = "/usr/local/bin/cloud-hypervisor-ci"
 	PrometheusTargetsPath = consts.MntPrefix + "/prometheus-targets"
 
 	// on single host there should not be too much network

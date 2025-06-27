@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"syscall"
 
+	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/ch"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	firecracker "github.com/X-code-interpreter/sandbox-backend/packages/shared/fc"
@@ -84,23 +88,25 @@ func newVmm(
 	cmd.Stderr = cmdStdoutWriter
 	cmd.Stdout = cmdStderrWriter
 
-	cgroupFd, err := syscall.Open(config.CgroupPath(), syscall.O_RDONLY, 0)
-	if err != nil {
-		errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-		return vmm, errMsg
-	}
-	defer syscall.Close(cgroupFd)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:      true,
-		CgroupFD:    cgroupFd,
-		UseCgroupFD: true,
+	if constants.Repurposable {
+		cgroupFd, err := syscall.Open(config.CgroupPath(), syscall.O_RDONLY, 0)
+		if err != nil {
+			errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
+			telemetry.ReportCriticalError(childCtx, errMsg)
+			return vmm, errMsg
+		}
+		defer syscall.Close(cgroupFd)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid:      true,
+			CgroupFD:    cgroupFd,
+			UseCgroupFD: true,
+		}
 	}
 
 	go utils.RedirectVmmOutput(vmmCtx, "vmm stdout", cmdStdoutReader)
 	go utils.RedirectVmmOutput(vmmCtx, "vmm stderr", cmdStderrReader)
 
-	err = cmd.Start()
+	err := cmd.Start()
 	if err != nil {
 		errMsg := fmt.Errorf("start vm failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -108,6 +114,14 @@ func newVmm(
 	}
 	telemetry.ReportEvent(childCtx, "vm started")
 	vmm.cmd = cmd
+
+	if !constants.Repurposable {
+		// migrate to cgroup
+		if err := addProcToCgroup(config.CgroupPath(), cmd.Process.Pid); err != nil {
+			return vmm, fmt.Errorf("migrate vmm to cgroup failed: %w", err)
+		}
+		telemetry.ReportEvent(childCtx, "vm miragted to cgroup")
+	}
 
 	switch config.VmmType {
 	case template.FIRECRACKER:
@@ -226,6 +240,19 @@ func (vmm vmm) snapshot(ctx context.Context, tracer trace.Tracer, dir string) er
 	}
 	telemetry.ReportEvent(childCtx, "vm snapshot created")
 
+	return nil
+}
+
+func addProcToCgroup(cgroupPath string, pid int) error {
+	cgroupProcFilePath := filepath.Join(cgroupPath, "cgroup.procs")
+	cgroupProcFile, err := os.OpenFile(cgroupProcFilePath, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer cgroupProcFile.Close()
+	if _, err = cgroupProcFile.Write([]byte(strconv.Itoa(pid))); err != nil {
+		return nil
+	}
 	return nil
 }
 

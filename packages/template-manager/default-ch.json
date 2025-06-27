@@ -1,0 +1,16 @@
+{
+  "template": "default-sandbox-ch",
+  "startCmd": "",
+  "memMB": 2048,
+  "vcpu": 1,
+  "diskMB": 5120,
+  "kernelVersion": "ch-6.1.134",
+  "hugePages": false,
+  "dockerImg": "jialianghuang/default-sandbox:latest",
+  "noPull": true,
+  "overlay": true,
+  "vmmType": "cloud-hypervisor",
+  "rootfsBuildMode": 0,
+  "kernelDebugOutput": false,
+  "hypervisorPath": "/root/codes/cloud-hypervisor/target/x86_64-unknown-linux-musl/release/cloud-hypervisor"
+}

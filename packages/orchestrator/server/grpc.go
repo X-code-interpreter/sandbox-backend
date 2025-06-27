@@ -51,7 +51,7 @@ func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 	go func() {
 		waitCtx, waitSpan := s.tracer.Start(
-			trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(childCtx)),
+			context.Background(),
 			"wait-sandbox",
 			trace.WithAttributes(
 				attribute.String("sandbox.id", sbx.SandboxID()),
