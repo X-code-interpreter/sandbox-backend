@@ -80,22 +80,25 @@ Currently, sandbox-backend only support running on single machine (instead of a 
 cd sandbox-backend/scripts && bash start.sh
 ```
 
-Now, we can start a sandbox using either the Python SDK or command line tools.
+Now, we can start a sandbox using either the Python SDK or the command line tool.
 (Note that we can start multiple sandboxes of the same template).
 
 ```python
+import asyncio
 from sandbox_sdk.sandbox import Sandbox
 
 async def main():
+  template = "default-sandbox"
   ci = await Sandbox.create(
       template=template,
       target_addr=SANDBOX_BACKEND_ADDR,
-      timeout=120,
   )
   p = await ci.process.start("python -c \"print('Hello World')\"")
   await p.wait()
   print(p.stdout)
 
+
+asyncio.run(main())
 ```
 
 ```bash
@@ -111,15 +114,15 @@ ssh root@bc94913a-c86f-4a28-8e98-88dd6794b8e1
 ## Customize template
 To customize the template, you need to prepare two things:
 
-- An docker image
+- A customized docker image
 - The template json specification
 
 
-The meaning of customizable field of the json specification is as following:
+The meanings of customizable fields in json specification are:
 ```
 {
   "template": # The template name, any string is fine
-  "startCmd": # The program you want to run when start the command line (e.g., the jupyter notebook)
+  "startCmd": # The program you want to run when start the sandbox (e.g., the jupyter notebook)
   "memMB": 2048,
   "vcpu": 1,
   "diskMB": 2048,
@@ -136,3 +139,7 @@ The meaning of customizable field of the json specification is as following:
   "hypervisorPath": # The path to the hypervisor binary
 }
 ```
+
+
+## Acknowledgement
+This project partially refers to [E2B](https://e2b.dev/).
