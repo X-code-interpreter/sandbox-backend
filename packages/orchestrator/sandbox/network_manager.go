@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
@@ -56,23 +57,29 @@ func (net *SandboxNetworkWrapper) MakeFree(ctx context.Context, m *NetworkManage
 
 type NetworkManager struct {
 	mu     sync.Mutex
-	nextID int64
+	nextID int
 	// free contains the idle net namespace
-	free []int64
+	free []int
 	// save a reference to all initialized network environment
 	// make it easier to cleanup
 	// NOTE(huang-jl): maybe an array is enough
-	all map[int64]*SandboxNetworkWrapper
-	dns *network.DNS
+	all        map[int]*SandboxNetworkWrapper
+	dns        *network.DNS
+	VethSubnet *net.IPNet // veth subnet, used to create new SandboxNetwork
 }
 
-func NewNetworkManager(dns *network.DNS) *NetworkManager {
+func NewNetworkManager(dns *network.DNS, vethSubnet *net.IPNet) *NetworkManager {
 	// TODO(huang-jl): add background task like create ns if there is few
 	// SandboxNetwork in the free array.
 
 	// start from 1
-	all := make(map[int64]*SandboxNetworkWrapper)
-	return &NetworkManager{all: all, dns: dns, nextID: 1}
+	all := make(map[int]*SandboxNetworkWrapper)
+	return &NetworkManager{
+		all:        all,
+		dns:        dns,
+		nextID:     1,
+		VethSubnet: vethSubnet,
+	}
 }
 
 func (m *NetworkManager) Cleanup(ctx context.Context) {
@@ -105,13 +112,14 @@ func (m *NetworkManager) DNS() *network.DNS {
 func newSandboxNetwork(
 	ctx context.Context,
 	tracer trace.Tracer,
-	idx int64,
+	idx int,
+	subnet *net.IPNet,
 ) (network.SandboxNetwork, error) {
 	childCtx, childSpan := tracer.Start(ctx, "create-sandbox-network", trace.WithAttributes(
-		attribute.Int64("network_idx", idx),
+		attribute.Int("network_idx", idx),
 	))
 	defer childSpan.End()
-	env := network.NewNetworkEnv(idx)
+	env := network.NewNetworkEnv(idx, subnet)
 	net := network.NewSandboxNetwork(env, "")
 	// init network
 	if err := setupNetEnv(childCtx, tracer, &net); err != nil {
@@ -180,7 +188,7 @@ func (m *NetworkManager) RecycleSandboxNetwork(ctx context.Context, net *network
 	}
 
 	telemetry.ReportEvent(ctx, "sandbox network recycled",
-		attribute.Int64("network_idx", net.NetworkIdx()),
+		attribute.Int("network_idx", net.NetworkIdx()),
 		attribute.String("recycle_method", recycleMethod),
 	)
 	return nil
@@ -206,16 +214,17 @@ func (m *NetworkManager) GetSandboxNetwork(
 		m.free = m.free[1:]
 		wrapper = m.all[idx]
 		m.mu.Unlock()
-		telemetry.ReportEvent(childCtx, "reuse sandbox network", attribute.Int64("idx", idx))
+		telemetry.ReportEvent(childCtx, "reuse sandbox network", attribute.Int("idx", idx))
 	} else {
 		// create a new from scratch
 		idx := m.nextID
 		m.nextID += 1
 		m.mu.Unlock()
+		// TODO: A more resonsable judgement relies on subnet size
 		if idx > constants.MaxNetworkNumber {
 			return nil, fmt.Errorf("network instance number exceed the upper bound")
 		}
-		net, err := newSandboxNetwork(childCtx, tracer, idx)
+		net, err := newSandboxNetwork(childCtx, tracer, idx, m.VethSubnet)
 		if err != nil {
 			return nil, err
 		}
@@ -300,22 +309,21 @@ func (m *NetworkManager) SearchNetwork(ctx context.Context, tracer trace.Tracer,
 		attribute.String("net_ns_name", netNsName),
 	))
 	defer childSpan.End()
-	idx := network.GetInternalIdxFromNetNsName(netNsName)
-	if idx < 0 {
-		err := fmt.Errorf("cannot extract idx from netns name")
-		telemetry.ReportCriticalError(childCtx, err)
-		return nil, err
+	netEnv, err := network.ParseNetworkEnvFromNetNsName(netNsName)
+	if err != nil {
+		errMsg := fmt.Errorf("cannot parse network env from netns name: %w", err)
+		telemetry.ReportCriticalError(childCtx, errMsg)
+		return nil, errMsg
 	}
-	// netns of sandbox
+	// try get netns handle, to confirm the netns still exists
 	netNsHandle, err := netns.GetFromName(netNsName)
 	if err != nil {
 		errMsg := fmt.Errorf("get sandbox netns handle failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return nil, errMsg
 	}
-	defer netNsHandle.Close()
-	env := network.NewNetworkEnv(idx)
-	return &env, nil
+	netNsHandle.Close()
+	return netEnv, nil
 }
 
 // can be started in any netns as long as we can access /etc/hosts file.

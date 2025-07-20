@@ -1,7 +1,9 @@
 package network
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -10,70 +12,91 @@ import (
 
 type NetworkEnv struct {
 	// The internal index (instead of the id of network namespace)
-	idx int64
+	idx int
+	// Subnet of the veth and vpeer device
+	subnet *net.IPNet
 }
 
-func NewNetworkEnv(idx int64) NetworkEnv {
-	return NetworkEnv{idx}
+func NewNetworkEnv(idx int, subnet *net.IPNet) NetworkEnv {
+	return NetworkEnv{idx, subnet}
 }
 
 func (n *NetworkEnv) NetNsName() string {
-	return "sandbox-net-" + strconv.FormatInt(n.idx, 10)
+	// NOTE: we encode the ipnet into its name
+	// to prevent conflict from different subnet.
+	ip := strings.ReplaceAll(n.subnet.IP.String(), ".", "-")
+	maskSize, _ := n.subnet.Mask.Size()
+	return fmt.Sprintf("sandbox-net-%s-%d-%d", ip, maskSize, n.idx)
 }
 
-// return -1 when meet invalid veth name
-func GetInternalIdxFromNetNsName(netNsName string) int64 {
-	idx, err := strconv.ParseInt(strings.TrimPrefix(netNsName, "sandbox-net-"), 10, 64)
-	if err != nil {
-		return -1
+// return -1 when meet invalid netns name
+func ParseNetworkEnvFromNetNsName(netNsName string) (*NetworkEnv, error) {
+	prefix := "sandbox-net-"
+	if !strings.HasPrefix(netNsName, prefix) {
+		return nil, fmt.Errorf("invalid netns name prefix: %s", netNsName)
 	}
-	return idx
+	parts := strings.Split(strings.TrimPrefix(netNsName, prefix), "-")
+	if len(parts) != 6 {
+		return nil, fmt.Errorf("invalid netns name format: %s", netNsName)
+	}
+
+	ipStr := strings.Join(parts[0:4], ".")
+	_, ipnet, err := net.ParseCIDR(ipStr + "/" + parts[4])
+	if err != nil {
+		return nil, fmt.Errorf("parse subnet for %s failed: %w", netNsName, err)
+	}
+	idx, err := strconv.Atoi(parts[5])
+	if err != nil {
+		return nil, fmt.Errorf("invalid index: %v", err)
+	}
+
+	return &NetworkEnv{idx: idx, subnet: ipnet}, nil
 }
 
-func (n *NetworkEnv) NetworkIdx() int64 {
+func (n *NetworkEnv) NetworkIdx() int {
 	return n.idx
 }
 
 // The veth device ip address in host netns
-func (n *NetworkEnv) VethIP() string {
-	// as veth mask is 30, which means every 4 address will be in different subnet
-	// NOTE each component in ip address is at most 8bit (i.e., 256)
-	lower := n.idx % (256 >> (32 - n.VMask()))
-	rem := (n.idx - lower) / (256 >> (32 - n.VMask()))
-	middle := rem % 256
-	higher := (rem - middle) / 256
+func (n *NetworkEnv) VethIP() net.IP {
+	// NOTE: Currently, only support ipv4 addr
+	baseIPAddr := binary.BigEndian.Uint32(n.subnet.IP.To4())
+	ones, bits := n.subnet.Mask.Size()
+	size := 1 >> (bits - ones)
+	offset := size * n.idx
 
-	// base address is 10.168.0.0
-	return fmt.Sprintf("10.%d.%d.%d", 168+higher, middle, lower<<(32-n.VMask())+1)
+	result := make(net.IP, 4)
+	binary.BigEndian.PutUint32(result, baseIPAddr+uint32(offset)+1)
+	return result
 }
 
 // The veth device ip address in sandbox netns
-func (n *NetworkEnv) VpeerIP() string {
-	// as veth mask is 30, which means every 4 address will be in different subnet
-	// NOTE each component in ip address is at most 8bit (i.e., 256)
-	low := n.idx % (256 >> (32 - n.VMask()))
-	rem := (n.idx - low) / (256 >> (32 - n.VMask()))
-	middle := rem % 256
-	high := (rem - middle) / 256
+func (n *NetworkEnv) VpeerIP() net.IP {
+	// NOTE: Currently, only support ipv4 addr
+	baseIPAddr := binary.BigEndian.Uint32(n.subnet.IP.To4())
+	ones, bits := n.subnet.Mask.Size()
+	size := 1 >> (bits - ones)
+	offset := size * n.idx
 
-	// base address is 10.168.0.0
-	return fmt.Sprintf("10.%d.%d.%d", 168+high, middle, low<<(32-n.VMask())+2)
+	result := make(net.IP, 4)
+	binary.BigEndian.PutUint32(result, baseIPAddr+uint32(offset)+2)
+	return result
 }
 
-func (n *NetworkEnv) VMask() int {
-	return 30
+func (n *NetworkEnv) VethMask() int {
+	return consts.VethMask
 }
 
 // The veth device name in Fc netns
 func (n *NetworkEnv) VpeerName() string {
-	return "veth0"
+	return consts.VPeerName
 }
 
 // CIDR format: ip/mask (e.g., 192.168.0.1/24)
 //
 // The veth device ip address ON HOST
 func (n *NetworkEnv) VethCIDR() string {
-	return fmt.Sprintf("%s/%d", n.VethIP(), n.VMask())
+	return fmt.Sprintf("%s/%d", n.VethIP(), n.VethMask())
 }
 
 func (n *NetworkEnv) VethName() string {
@@ -82,12 +105,12 @@ func (n *NetworkEnv) VethName() string {
 
 // The veth device ip address in Fc netns
 func (n *NetworkEnv) VpeerCIDR() string {
-	return fmt.Sprintf("%s/%d", n.VpeerIP(), n.VMask())
+	return fmt.Sprintf("%s/%d", n.VpeerIP(), n.VethMask())
 }
 
 // The tap device addree
-func (n *NetworkEnv) TapIP() string {
-	return consts.HostTapIpAddress
+func (n *NetworkEnv) TapIP() net.IP {
+	return net.ParseIP(consts.HostTapIPAddress)
 }
 
 // The tap device addree
@@ -97,12 +120,12 @@ func (n *NetworkEnv) TapName() string {
 
 // The tap device addree
 func (n *NetworkEnv) TapCIDR() string {
-	return fmt.Sprintf("%s/%s", n.TapIP(), consts.HostTapIpMask)
+	return fmt.Sprintf("%s/%s", n.TapIP(), consts.HostTapIPMask)
 }
 
 // The ip address of the guest OS
 func (n *NetworkEnv) GuestIP() string {
-	return consts.GuestNetIpAddr
+	return consts.GuestNetIPAddr
 }
 
 // Difference instances of sandbox will have same ip address,
@@ -117,6 +140,7 @@ func (n *NetworkEnv) GuestIP() string {
 func (n *NetworkEnv) HostClonedIP() string {
 	low := n.idx%254 + 1 // range from [1, 254]
 	high := n.idx / 254
+	// TODO: remove host cloned ip and use veth address directly?
 	return fmt.Sprintf("192.168.%d.%d", 168+high, low)
 }
 

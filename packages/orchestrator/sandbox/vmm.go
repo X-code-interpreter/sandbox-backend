@@ -12,15 +12,16 @@ import (
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/ch"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/config"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	firecracker "github.com/X-code-interpreter/sandbox-backend/packages/shared/fc"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/hypervisor"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sys/unix"
 )
 
 type vmm struct {
@@ -31,7 +32,7 @@ type vmm struct {
 func newVmm(
 	ctx context.Context,
 	tracer trace.Tracer,
-	config *Config,
+	cfg *SandboxConfig,
 	net *network.SandboxNetwork,
 ) (vmm, error) {
 	var vmm vmm
@@ -44,31 +45,39 @@ func newVmm(
 		"fc-vmm",
 	)
 
+	// TODO: refactor this, use unshare + mount syscall directly
+	currentBinPath, err := os.Executable()
+	if err != nil {
+		return vmm, fmt.Errorf("error getting executable path: %w", err)
+	}
+	bindMountBinPath := filepath.Join(filepath.Dir(currentBinPath), "bind_mount")
 	// we bind mount the EnvInstancePath (where contains the rootfs)
 	// to the running path (where snapshotting happend)
 	rootfsMountCmd := fmt.Sprintf(
-		"mount --bind %s %s && ",
-		config.EnvInstancePath(),
-		config.RunningPath(),
+		"%s %s %s && ",
+		bindMountBinPath,
+		cfg.InstancePath(),
+		cfg.PrivateDir(cfg.DataRoot),
 	)
 
 	// NOTE(huang-jl): we should not use env.KernelMountPath here
 	// as it points to a file (e.g., /path/to/vmlinux), instead of a directory
 	kernelMountCmd := fmt.Sprintf(
-		"mount --bind %s %s && ",
-		config.KernelDirPath(),
-		config.KernelMountDirPath(),
+		"%s %s %s && ",
+		bindMountBinPath,
+		cfg.HostKernelPath(cfg.DataRoot),
+		cfg.PrivateKernelPath(cfg.DataRoot),
 	)
 
 	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", net.NetNsName())
 	var hypervisorCmd string
-	switch config.VmmType {
-	case template.FIRECRACKER:
-		hypervisorCmd = hypervisor.FirecrackerCmd(config.HypervisorBinaryPath, config.SocketPath)
-	case template.CLOUDHYPERVISOR:
-		hypervisorCmd = hypervisor.CloudHypervisorCmd(config.HypervisorBinaryPath, config.SocketPath)
+	switch cfg.VmmType {
+	case config.FIRECRACKER:
+		hypervisorCmd = hypervisor.FirecrackerCmd(cfg.HypervisorBinaryPath, cfg.SocketPath)
+	case config.CLOUDHYPERVISOR:
+		hypervisorCmd = hypervisor.CloudHypervisorCmd(cfg.HypervisorBinaryPath, cfg.SocketPath)
 	default:
-		err := template.InvalidVmmType
+		err := config.InvalidVmmType
 		telemetry.ReportCriticalError(childCtx, err)
 		return vmm, err
 	}
@@ -88,25 +97,28 @@ func newVmm(
 	cmd.Stderr = cmdStdoutWriter
 	cmd.Stdout = cmdStderrWriter
 
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		AmbientCaps: []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_NET_ADMIN},
+	}
+
 	if constants.Repurposable {
-		cgroupFd, err := syscall.Open(config.CgroupPath(), syscall.O_RDONLY, 0)
+		cgroupFd, err := syscall.Open(cfg.CgroupPath(), syscall.O_RDONLY, 0)
 		if err != nil {
 			errMsg := fmt.Errorf("open cgroup path when create new vm failed: %w", err)
 			telemetry.ReportCriticalError(childCtx, errMsg)
 			return vmm, errMsg
 		}
 		defer syscall.Close(cgroupFd)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Setsid:      true,
-			CgroupFD:    cgroupFd,
-			UseCgroupFD: true,
-		}
+		// use CLONE_INTO_CGROUP
+		cmd.SysProcAttr.Setsid = true
+		cmd.SysProcAttr.CgroupFD = cgroupFd
+		cmd.SysProcAttr.UseCgroupFD = true
 	}
 
 	go utils.RedirectVmmOutput(vmmCtx, "vmm stdout", cmdStdoutReader)
 	go utils.RedirectVmmOutput(vmmCtx, "vmm stderr", cmdStderrReader)
 
-	err := cmd.Start()
+	err = cmd.Start()
 	if err != nil {
 		errMsg := fmt.Errorf("start vm failed: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -117,16 +129,16 @@ func newVmm(
 
 	if !constants.Repurposable {
 		// migrate to cgroup
-		if err := addProcToCgroup(config.CgroupPath(), cmd.Process.Pid); err != nil {
+		if err := addProcToCgroup(cfg.CgroupPath(), cmd.Process.Pid); err != nil {
 			return vmm, fmt.Errorf("migrate vmm to cgroup failed: %w", err)
 		}
 		telemetry.ReportEvent(childCtx, "vm miragted to cgroup")
 	}
 
-	switch config.VmmType {
-	case template.FIRECRACKER:
+	switch cfg.VmmType {
+	case config.FIRECRACKER:
 		// Wait for the FC process to start so we can use FC API
-		client, err := firecracker.WaitForSocket(childCtx, tracer, config.SocketPath, consts.WaitTimeForHypervisorSocket)
+		client, err := firecracker.WaitForSocket(childCtx, tracer, cfg.SocketPath, consts.WaitTimeForHypervisorSocket)
 		if err != nil {
 			errMsg := fmt.Errorf("error waiting for vmm socket: %w", err)
 
@@ -134,26 +146,26 @@ func newVmm(
 		}
 		telemetry.ReportEvent(childCtx, "vmm process created fc socket")
 		vmm.Hypervisor = hypervisor.NewFirecracker(
-			getFcConfig(config, net, childSpan.SpanContext().TraceID().String()),
+			getFcConfig(cfg, net, childSpan.SpanContext().TraceID().String()),
 			client,
 		)
-	case template.CLOUDHYPERVISOR:
-		client, err := ch.WaitForSocket(childCtx, tracer, config.SocketPath, consts.WaitTimeForHypervisorSocket)
+	case config.CLOUDHYPERVISOR:
+		client, err := ch.WaitForSocket(childCtx, tracer, cfg.SocketPath, consts.WaitTimeForHypervisorSocket)
 		if err != nil {
 			errMsg := fmt.Errorf("error waiting for vmm socket: %w", err)
 
 			return vmm, errMsg
 		}
 		telemetry.ReportEvent(childCtx, "vmm process created ch socket")
-		vmm.Hypervisor = hypervisor.NewCloudHypervisor(getChConfig(config), client)
+		vmm.Hypervisor = hypervisor.NewCloudHypervisor(getChConfig(cfg), client)
 	default:
-		err := template.InvalidVmmType
+		err := config.InvalidVmmType
 		telemetry.ReportCriticalError(childCtx, err)
 		return vmm, err
 	}
 
 	// restore
-	if err := vmm.restore(childCtx, tracer, config); err != nil {
+	if err := vmm.restore(childCtx, tracer, cfg); err != nil {
 		vmm.stop(childCtx, tracer)
 		errMsg := fmt.Errorf("failed to restore: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -162,14 +174,14 @@ func newVmm(
 	return vmm, nil
 }
 
-func (vmm vmm) restore(ctx context.Context, tracer trace.Tracer, config *Config) error {
+func (vmm vmm) restore(ctx context.Context, tracer trace.Tracer, cfg *SandboxConfig) error {
 	childCtx, childSpan := tracer.Start(ctx, "restore-vm")
 	defer childSpan.End()
-	if err := vmm.Restore(childCtx, config.EnvDirPath()); err != nil {
+	if err := vmm.Restore(childCtx, cfg.TemplateImgDir(cfg.DataRoot)); err != nil {
 		return err
 	}
-	switch config.VmmType {
-	case template.CLOUDHYPERVISOR:
+	switch cfg.VmmType {
+	case config.CLOUDHYPERVISOR:
 		// cloud hypervisor need explicitly resume
 		if err := vmm.Resume(childCtx); err != nil {
 			return err
@@ -256,15 +268,15 @@ func addProcToCgroup(cgroupPath string, pid int) error {
 	return nil
 }
 
-func getFcConfig(config *Config, net *network.SandboxNetwork, traceID string) *hypervisor.FcConfig {
+func getFcConfig(cfg *SandboxConfig, net *network.SandboxNetwork, traceID string) *hypervisor.FcConfig {
 	logCollectorAddr := fmt.Sprintf("http://%s:%d", net.VethIP(), consts.DefaultLogCollectorPort)
 	return &hypervisor.FcConfig{
-		VcpuCount:       config.VCpuCount,
-		MemoryMB:        config.MemoryMB,
-		KernelImagePath: config.KernelMountPath(),
+		VcpuCount:       cfg.VCpuCount,
+		MemoryMB:        cfg.MemoryMB,
+		KernelImagePath: cfg.PrivateKernelPath(cfg.DataRoot),
 		// do not need for restore
 		KernelBootCmd:      "",
-		EnableDiffSnapshot: config.EnableDiffSnapshot,
+		EnableDiffSnapshot: cfg.EnableDiffSnapshot,
 		// do not need for restore
 		EnableOverlayFS: false,
 		// do not need for restore
@@ -274,30 +286,30 @@ func getFcConfig(config *Config, net *network.SandboxNetwork, traceID string) *h
 		TapDevName:         consts.HostTapName,
 		GuestNetIfaceName:  consts.GuestIfaceName,
 		GuestNetMacAddr:    consts.GuestMacAddress,
-		EnableHugepage:     config.HugePages,
+		EnableHugepage:     cfg.HugePages,
 
 		MmdsData: &hypervisor.MmdsMetadata{
-			SandboxID: config.SandboxID,
-			EnvID:     config.EnvID,
+			SandboxID: cfg.SandboxID,
+			EnvID:     cfg.TemplateID,
 			Address:   logCollectorAddr,
 			TraceID:   traceID,
 		},
 	}
 }
 
-func getChConfig(config *Config) *hypervisor.ChConfig {
+func getChConfig(cfg *SandboxConfig) *hypervisor.ChConfig {
 	return &hypervisor.ChConfig{
-		VcpuCount:       config.VCpuCount,
-		MemoryMB:        config.MemoryMB,
-		KernelImagePath: config.KernelMountPath(),
+		VcpuCount:       cfg.VCpuCount,
+		MemoryMB:        cfg.MemoryMB,
+		KernelImagePath: cfg.PrivateKernelPath(cfg.DataRoot),
 		KernelBootCmd:   "",
-		EnableOverlayFS: config.Overlay,
+		EnableOverlayFS: cfg.Overlay,
 		// do not need for restore
 		RootfsPath: "",
 		// do not need for restore
 		WritableRootfsPath: "",
 		TapDevName:         consts.HostTapName,
 		GuestNetMacAddr:    consts.GuestMacAddress,
-		EnableHugepage:     config.HugePages,
+		EnableHugepage:     cfg.HugePages,
 	}
 }

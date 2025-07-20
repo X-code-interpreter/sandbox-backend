@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	text_template "text/template"
 
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
@@ -36,22 +37,26 @@ const (
 //go:embed overlay-init
 var overlayInitContent []byte
 
+//go:embed provision.sh
+var provisionEnvScriptFile string
+var EnvInstanceTemplate = text_template.Must(text_template.New("provisioning-script").Parse(provisionEnvScriptFile))
+
 type Rootfs struct {
 	docker *client.Client
-	env    *Env
+	cfg    *TemplateManagerConfig
 }
 
-func NewRootfs(ctx context.Context, tracer trace.Tracer, docker *client.Client, env *Env) (*Rootfs, error) {
+func NewRootfs(ctx context.Context, tracer trace.Tracer, docker *client.Client, c *TemplateManagerConfig) (*Rootfs, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-rootfs")
 	defer childSpan.End()
 
 	rootfs := &Rootfs{
 		docker: docker,
-		env:    env,
+		cfg:    c,
 	}
 
 	// if user set NoPull explictly, then do not pull from registry
-	if !env.NoPull {
+	if !c.NoPull {
 		// TODO(huang-jl): remove docker image when failed ?
 		err := rootfs.pullDockerImage(childCtx, tracer)
 		if err != nil {
@@ -106,10 +111,10 @@ func (r *Rootfs) pullDockerImage(ctx context.Context, tracer trace.Tracer) error
 }
 
 func (r *Rootfs) dockerTag() string {
-	if r.env.DockerImage == "" {
+	if r.cfg.DockerImage == "" {
 		return "e2bdev/code-interpreter:latest"
 	}
-	return r.env.DockerImage
+	return r.cfg.DockerImage
 }
 
 // This is a complex function
@@ -129,19 +134,19 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 	// we only pass constants.StartCmdEnvFilePath
 	// when user specify a startCmdEnvFilePath in its config json
 	startCmdEnvFilePath := ""
-	if len(r.env.StartCmdEnvFilePath) > 0 {
+	if len(r.cfg.StartCmd.EnvFilePath) > 0 {
 		startCmdEnvFilePath = constants.StartCmdEnvFilePath
 	}
 	err = EnvInstanceTemplate.Execute(&scriptDef, struct {
-		EnvID                    string
+		TemplateID               string
 		StartCmd                 string
 		StartCmdEnvFilePath      string
 		StartCmdWorkingDirectory string
 	}{
-		EnvID:                    r.env.EnvID,
-		StartCmd:                 strings.ReplaceAll(r.env.StartCmd, "\"", "\\\""),
+		TemplateID:               r.cfg.TemplateID,
+		StartCmd:                 strings.ReplaceAll(r.cfg.StartCmd.Cmd, "\"", "\\\""),
 		StartCmdEnvFilePath:      startCmdEnvFilePath,
-		StartCmdWorkingDirectory: r.env.StartCmdWorkingDirectory,
+		StartCmdWorkingDirectory: r.cfg.StartCmd.WorkingDir,
 	})
 	if err != nil {
 		errMsg := fmt.Errorf("error executing provision script: %w", err)
@@ -171,10 +176,10 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		// TODO: Network mode is causing problems with /etc/hosts - we want to find a way to fix this and enable network mode again
 		// NetworkMode: container.NetworkMode(network.ID),
 		Resources: container.Resources{
-			Memory:     r.env.MemoryMB << ToMBShift,
+			Memory:     r.cfg.MemoryMB << ToMBShift,
 			CPUPeriod:  100000,
-			CPUQuota:   r.env.VCpuCount * 100000,
-			MemorySwap: r.env.MemoryMB << ToMBShift,
+			CPUQuota:   r.cfg.VCpuCount * 100000,
+			MemorySwap: r.cfg.MemoryMB << ToMBShift,
 			PidsLimit:  &pidsLimit,
 		},
 	}, nil, &v1.Platform{}, "")
@@ -240,12 +245,12 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	filesToTar := []fileToTar{
 		{
-			localPath: consts.HostEnvdPath,
+			localPath: r.cfg.EnvdPath,
 			tarPath:   consts.GuestEnvdPath,
 		},
 	}
 	// initialize overlay init only when enable overlay
-	if r.env.Overlay {
+	if r.cfg.Overlay {
 		overlayInitTmp, err := os.CreateTemp("", "overlay-init")
 		if err != nil {
 			errMsg := fmt.Errorf("error create temp file for overlay-init: %w", err)
@@ -271,9 +276,9 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		})
 	}
 
-	if len(r.env.StartCmdEnvFilePath) > 0 {
+	if len(r.cfg.StartCmd.EnvFilePath) > 0 {
 		filesToTar = append(filesToTar, fileToTar{
-			localPath: r.env.StartCmdEnvFilePath,
+			localPath: r.cfg.StartCmd.EnvFilePath,
 			tarPath:   constants.StartCmdEnvFilePath,
 		})
 	}
@@ -420,7 +425,7 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 		return errMsg
 	}
 
-	rootfsFile, err := os.Create(r.env.TmpRootfsPath())
+	rootfsFile, err := os.Create(r.cfg.PrivateRootfsPath(r.cfg.DataRoot))
 	if err != nil {
 		errMsg := fmt.Errorf("error creating rootfs file: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -468,7 +473,7 @@ func (r *Rootfs) createRootfsFile(ctx context.Context, tracer trace.Tracer) erro
 
 	telemetry.ReportEvent(childCtx, "converted container tar to ext4")
 
-	if r.env.Overlay {
+	if r.cfg.Overlay {
 		return r.createOverlayRootfsFile(childCtx, tracer, rootfsFile)
 	} else {
 		return r.createOneRootfs(childCtx, tracer, rootfsFile)
@@ -515,7 +520,7 @@ func (r *Rootfs) createOverlayRootfsFile(ctx context.Context, tracer trace.Trace
 			attribute.String("name", rootfsFile.Name()),
 		)
 	}
-	r.env.RootfsSize = targetFileSize
+	r.cfg.RootfsSize = targetFileSize
 
 	// 2. create the writable rootfs file
 	if err = r.prepareWritableRootfs(ctx, tracer); err != nil {
@@ -534,7 +539,7 @@ func (r *Rootfs) createOverlayRootfsFile(ctx context.Context, tracer trace.Trace
 func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer) error {
 	childCtx, childSpan := tracer.Start(ctx, "prepare-writable-rootfs")
 	defer childSpan.End()
-	writableRootfs, err := os.Create(r.env.TmpWritableRootfsPath())
+	writableRootfs, err := os.Create(r.cfg.PrivateWritableRootfsPath(r.cfg.DataRoot))
 	if err != nil {
 		errMsg := fmt.Errorf("error creating writable rootfs file")
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -542,14 +547,14 @@ func (r *Rootfs) prepareWritableRootfs(ctx context.Context, tracer trace.Tracer)
 	}
 	defer writableRootfs.Close() // ignore error here
 
-	targetSize := getAlignFileSizeForPmem(r.env.DiskSizeMB << ToMBShift)
+	targetSize := getAlignFileSizeForPmem(r.cfg.DiskSizeMB << ToMBShift)
 	if err := writableRootfs.Truncate(targetSize); err != nil {
 		errMsg := fmt.Errorf("error truncate writable rootfs file")
 		telemetry.ReportCriticalError(childCtx, errMsg)
 		return errMsg
 	}
 
-	cmd := exec.CommandContext(childCtx, "mkfs.ext4", r.env.TmpWritableRootfsPath())
+	cmd := exec.CommandContext(childCtx, "mkfs.ext4", r.cfg.PrivateWritableRootfsPath(r.cfg.DataRoot))
 	mkfsStdoutWriter := telemetry.NewEventWriter(childCtx, "stdout")
 	cmd.Stdout = mkfsStdoutWriter
 
@@ -563,7 +568,7 @@ func (r *Rootfs) makeRootfsWritable(ctx context.Context, tracer trace.Tracer) er
 	tuneContext, tuneSpan := tracer.Start(ctx, "tune-rootfs-file-cmd")
 	defer tuneSpan.End()
 
-	cmd := exec.CommandContext(tuneContext, "tune2fs", "-O ^read-only", r.env.TmpRootfsPath())
+	cmd := exec.CommandContext(tuneContext, "tune2fs", "-O ^read-only", r.cfg.PrivateRootfsPath(r.cfg.DataRoot))
 
 	tuneStdoutWriter := telemetry.NewEventWriter(tuneContext, "stdout")
 	cmd.Stdout = tuneStdoutWriter
@@ -586,18 +591,19 @@ func (r *Rootfs) resizeRootfs(ctx context.Context, tracer trace.Tracer, rootfsFi
 		return err
 	}
 	// (For used as pmem file, we need align it to 2MB)
-	rootfsSize = getAlignFileSizeForPmem(rootfsSize + r.env.DiskSizeMB<<ToMBShift)
+	rootfsSize = getAlignFileSizeForPmem(rootfsSize + r.cfg.DiskSizeMB<<ToMBShift)
 	if err := resizeFsFile(resizeContext, rootfsFile, rootfsSize); err != nil {
 		errMsg := fmt.Errorf("error resize rootfs file: %w", err)
 		telemetry.ReportCriticalError(resizeContext, errMsg)
 
 		return errMsg
 	}
-	r.env.RootfsSize = rootfsSize
+	r.cfg.RootfsSize = rootfsSize
 	telemetry.ReportEvent(resizeContext, "resized rootfs file", attribute.Int64("size", rootfsSize))
 	return nil
 }
 
+// TODO: rootfs also has a resize function, try merge them into one
 func resizeFsFile(ctx context.Context, file *os.File, size int64) error {
 	if err := file.Truncate(size); err != nil {
 		return err

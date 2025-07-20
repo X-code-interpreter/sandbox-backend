@@ -38,13 +38,14 @@ type server struct {
 	netManager *sandbox.NetworkManager
 	tracer     trace.Tracer
 	metric     *serverMetric
+	cfg        *OrchestratorConfig
 }
 
 // the second returned value is a cleanup function
 // that needs to be called when shutdown the server.
 //
 // It just stop all the sandboxes
-func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
+func NewSandboxGrpcServer(logger *zap.Logger, cfg *OrchestratorConfig) (*grpc.Server, func(), error) {
 	grpcSrv := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
@@ -54,6 +55,9 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 	)
 
 	logger.Info("Initializing orchestrator server")
+	if err := cfg.initialize(); err != nil {
+		return nil, nil, fmt.Errorf("initialize orchestrator config failed: %w", err)
+	}
 
 	dns, err := network.NewDNS()
 	if err != nil {
@@ -67,9 +71,10 @@ func NewSandboxGrpcServer(logger *zap.Logger) (*grpc.Server, func(), error) {
 
 	s := server{
 		sandboxes:  make(map[string]*sandbox.Sandbox),
-		netManager: sandbox.NewNetworkManager(dns),
+		netManager: sandbox.NewNetworkManager(dns, cfg.Subnet.IPNet),
 		tracer:     otel.Tracer(constants.ServiceName),
 		metric:     metric,
+		cfg:        cfg,
 	}
 
 	orchestrator.RegisterSandboxServer(grpcSrv, &s)
@@ -123,7 +128,7 @@ func (s *server) shutdown() {
 	s.netManager.Cleanup(ctx)
 }
 
-var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, sandbox.EnvInstancesDirName))
+var envIDRegex *regexp.Regexp = regexp.MustCompile(fmt.Sprintf(`/([\w-]+)/%s/`, sandbox.InstancesDirName))
 
 // EnvID's alias is TemplateID
 //
@@ -208,7 +213,8 @@ func (s *server) purgeOne(ctx context.Context, sandboxInfo *orchestrator.Sandbox
 	// 2. cleanup network
 	err = func() error {
 		var finalErr error
-		netEnv := network.NewNetworkEnv(*sandboxInfo.NetworkIdx)
+		// TODO: use a more resaonable way to get subnet info
+		netEnv := network.NewNetworkEnv(int(*sandboxInfo.NetworkIdx), s.netManager.VethSubnet)
 		sbxNetwork := network.NewSandboxNetwork(netEnv, sandboxID)
 		if err := sbxNetwork.DeleteNetns(); err != nil {
 			telemetry.ReportError(ctx, err)
@@ -241,7 +247,7 @@ func (s *server) purgeOne(ctx context.Context, sandboxInfo *orchestrator.Sandbox
 	// 3. cleanup env
 	// we only need EnvInstancePath, SocketPath, CgroupPath and PrometheusTargetPath
 	err = func() error {
-		env, err := sandbox.NewSandboxConfig(ctx, &orchestrator.SandboxCreateRequest{
+		env, err := s.NewSandboxConfig(ctx, &orchestrator.SandboxCreateRequest{
 			// only this two field is enough to purge
 			SandboxID:  sandboxID,
 			TemplateID: envID,

@@ -3,6 +3,7 @@ package network
 import (
 	"net"
 	"runtime/debug"
+	"slices"
 	"testing"
 )
 
@@ -15,9 +16,10 @@ func assert(t *testing.T, res bool) {
 }
 
 func TestFcNetwork(t *testing.T) {
+	_, ipnet, _ := net.ParseCIDR("10.140.0.0/16")
 	var fcNets []*NetworkEnv
 	for i := 0; i < 5000; i++ {
-		netEnv := NewNetworkEnv(int64(i))
+		netEnv := NewNetworkEnv(i, ipnet)
 		fcNets = append(fcNets, &netEnv)
 	}
 
@@ -32,16 +34,16 @@ func TestFcNetwork(t *testing.T) {
 		ip = ip.To4()
 		assert(t, ip[3] < 255 && ip[3] > 0)
 		vip := n.VethIP()
-		assert(t, ip.String() == vip)
+		assert(t, slices.Equal(vip, ip))
 		// make sure vip not conflict with others
-		_, ok := vethIps[vip]
+		_, ok := vethIps[vip.String()]
 		assert(t, !ok)
 		// make sure ip is not in the same subnetwork
 		for otherIp := range vethIps {
 			ip := net.ParseIP(otherIp)
 			assert(t, !ipNet.Contains(ip))
 		}
-		vethIps[vip] = ipNet
+		vethIps[vip.String()] = ipNet
 
 		// host cloned ip
 		hostCIDR := n.HostClonedCIDR()

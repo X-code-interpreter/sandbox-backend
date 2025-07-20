@@ -16,20 +16,34 @@ Then start compiling the binary of sandbox backend
 
 ```bash
 git clone https://github.com/X-code-interpreter/sandbox-backend.git
-cd sandbox-backend/packages
+cd sandbox-backend/scripts
 
-cd cli && make build && cd -
-cd envd && make build && cd -
-cd orchestrator && make build && cd -
-cd template-manager && make build && cd -
+./start.sh setup && ./start.sh rebuild
 ```
 
 Finally, we start to install the python sdk:
 ```bash
 git clone https://github.com/X-code-interpreter/sandbox-sdk.git
 cd sandbox-sdk && make install
-
 ```
+
+## PreConfiguration
+
+As the sandbox backend reiles on network namespace and operate on `/run/netns`, you should grant permission and capabilities to the binary.
+
+```bash
+sudo setcap 'cap_sys_admin+ep' orchestrator/bin/orchestrator
+sudo setcap 'cap_sys_admin+ep' template-manager/bin/template-manager
+sudo groupadd --system netns
+sudo chgrp netns /run/netns
+sudo chmod 2775 /run/netns
+
+sudo usermod -aG netns $USER
+sudo usermod -aG kvm $USER
+```
+
+
+
 
 ## Quick Start
 

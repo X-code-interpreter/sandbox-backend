@@ -14,6 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sys/unix"
 )
 
 var hostDefaultGateway = Must(getDefaultGateway())
@@ -54,10 +55,14 @@ type SandboxNetwork struct {
 	NetworkEnv
 	SandboxID string
 
-	hostNS       netns.NsHandle
-	sbxNs        netns.NsHandle
-	unlockThread bool
-	cleanup      []func() error
+	hostNS netns.NsHandle
+	sbxNs  netns.NsHandle
+	// procedure running when deleting the network
+	// (first in, last executed)
+	cleanup []func() error
+	// procedure running at EndConfigure()
+	// (first in, last executed)
+	end []func() error
 }
 
 func NewSandboxNetwork(env NetworkEnv, sandboxID string) SandboxNetwork {
@@ -92,40 +97,48 @@ func (n *SandboxNetwork) StartConfigure() error {
 	}
 
 	runtime.LockOSThread()
-	n.unlockThread = true
+	n.end = append(n.end, func() error {
+		runtime.UnlockOSThread()
+		return nil
+	})
 	hostNS, err := netns.Get()
 	if err != nil {
 		return fmt.Errorf("cannot get current (host) namespace: %w", err)
 	}
 	n.hostNS = hostNS
+	n.end = append(n.end, func() error {
+		if n.hostNS.IsOpen() {
+			defer n.hostNS.Close()
+			if err := netns.Set(n.hostNS); err != nil {
+				return fmt.Errorf("set back to host netns failed: %w", err)
+			}
+		}
+		return nil
+	})
 	sbxNs, err := netns.NewNamed(n.NetNsName())
 	if err != nil {
 		return fmt.Errorf("cannot create new namespace: %w", err)
 	}
 	n.sbxNs = sbxNs
-	n.cleanup = append(n.cleanup, n.DeleteNetns)
+	n.end = append(n.end, func() error {
+		if n.sbxNs.IsOpen() {
+			return n.sbxNs.Close()
+		}
+		return nil
+	})
 
+	n.cleanup = append(n.cleanup, n.DeleteNetns)
 	return nil
 }
 
 func (n *SandboxNetwork) EndConfigure() error {
-	if n.unlockThread {
-		defer runtime.UnlockOSThread()
-	}
-	if n.hostNS.IsOpen() {
-		if err := netns.Set(n.hostNS); err != nil {
-			return fmt.Errorf("set back to host netns failed: %w", err)
-		}
-		if err := n.hostNS.Close(); err != nil {
-			return err
+	var finalErr error
+	for _, f := range slices.Backward(n.end) {
+		if err := f(); err != nil {
+			finalErr = errors.Join(finalErr, err)
 		}
 	}
-	if n.sbxNs.IsOpen() {
-		if err := n.sbxNs.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return finalErr
 }
 
 // start at sandbox ns
@@ -264,7 +277,7 @@ func (n *SandboxNetwork) SetupIptablesAndRoute() error {
 	// Add default route in sandbox ns
 	err := netlink.RouteAdd(&netlink.Route{
 		Scope: netlink.SCOPE_UNIVERSE,
-		Gw:    net.ParseIP(n.VethIP()),
+		Gw:    n.VethIP(),
 	})
 	if err != nil {
 		return fmt.Errorf("error adding default NS route: %w", err)
@@ -272,6 +285,9 @@ func (n *SandboxNetwork) SetupIptablesAndRoute() error {
 
 	n.cleanup = append(n.cleanup, n.DeleteHostRoute)
 
+	if err := n.raiseAmbientCaps([]uintptr{unix.CAP_NET_ADMIN, unix.CAP_NET_RAW}); err != nil {
+		return err
+	}
 	// This iptables is in sandbox netns
 	tables, err := iptables.New()
 	if err != nil {
@@ -315,7 +331,7 @@ func (n *SandboxNetwork) SetupIptablesAndRoute() error {
 
 	err = netlink.RouteAdd(&netlink.Route{
 		// Gw means next hop
-		Gw:  net.ParseIP(n.VpeerIP()),
+		Gw:  n.VpeerIP(),
 		Dst: ipNet,
 	})
 	if err != nil {
@@ -344,6 +360,49 @@ func (n *SandboxNetwork) SetupIptablesAndRoute() error {
 	return nil
 }
 
+func (n *SandboxNetwork) raiseAmbientCaps(caps []uintptr) error {
+	var (
+		hdr = unix.CapUserHeader{
+			Version: unix.LINUX_CAPABILITY_VERSION_3,
+		}
+		data      unix.CapUserData
+		updateCap bool
+	)
+	// The inheritable cap set of a running process cannot be changed
+	// (i.e., only inherited from parent process).
+	// But the PR_CAP_AMBIENT_RAISE needs the cap to be present in both
+	// permitted and inheritable cap sets.
+	// Thus, we manually set the inheritable and permitted cap set here.
+	if err := unix.Capget(&hdr, &data); err != nil {
+		return fmt.Errorf("error getting capabilities: %w", err)
+	}
+	for _, cap := range caps {
+		if (1<<cap)&data.Inheritable == 0 {
+			updateCap = true
+		}
+		data.Inheritable |= (1 << cap)
+		if (1<<cap)&data.Permitted == 0 {
+			updateCap = true
+		}
+		data.Permitted |= (1 << cap)
+	}
+	if updateCap {
+		if err := unix.Capset(&hdr, &data); err != nil {
+			return fmt.Errorf("error setting capabilities: %w", err)
+		}
+	}
+
+	for _, cap := range caps {
+		if err := unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_RAISE, cap, 0, 0); err != nil {
+			return fmt.Errorf("error raising ambient capability %d: %w", cap, err)
+		}
+		n.end = append(n.end, func() error {
+			return unix.Prctl(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_LOWER, cap, 0, 0)
+		})
+	}
+	return nil
+}
+
 func (n *SandboxNetwork) Cleanup(ctx context.Context) error {
 	var finalErr error
 
@@ -355,7 +414,7 @@ func (n *SandboxNetwork) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	telemetry.ReportEvent(ctx, "sandbox network cleanup", attribute.Int64("idx", n.NetworkIdx()))
+	telemetry.ReportEvent(ctx, "sandbox network cleanup", attribute.Int("idx", n.NetworkIdx()))
 
 	return finalErr
 
@@ -420,7 +479,7 @@ func (n *SandboxNetwork) DeleteHostRoute() (finalErr error) {
 		return fmt.Errorf("error parsing host snapshot CIDR: %w", err)
 	}
 	err = netlink.RouteDel(&netlink.Route{
-		Gw:  net.ParseIP(n.VpeerIP()),
+		Gw:  n.VpeerIP(),
 		Dst: ipNet,
 	})
 	if err != nil {

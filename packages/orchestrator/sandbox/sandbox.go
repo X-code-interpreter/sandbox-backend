@@ -36,7 +36,7 @@ var httpClient = http.Client{
 type Sandbox struct {
 	mu      sync.Mutex
 	vmm     vmm
-	Config  *Config
+	Config  *SandboxConfig
 	Net     *network.SandboxNetwork
 	StartAt time.Time
 
@@ -51,17 +51,17 @@ type Sandbox struct {
 func NewSandbox(
 	ctx context.Context,
 	tracer trace.Tracer,
-	req *orchestrator.SandboxCreateRequest,
+	config *SandboxConfig,
 	nm *NetworkManager,
 ) (*Sandbox, error) {
 	childCtx, childSpan := tracer.Start(
 		ctx,
 		"sandbox-new",
-		trace.WithAttributes(attribute.String("sandbox.id", req.SandboxID)),
+		trace.WithAttributes(attribute.String("sandbox.id", config.SandboxID)),
 	)
 	defer childSpan.End()
 
-	net, err := nm.GetSandboxNetwork(childCtx, tracer, req.SandboxID)
+	net, err := nm.GetSandboxNetwork(childCtx, tracer, config.SandboxID)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to get sandbox network: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -80,15 +80,6 @@ func NewSandbox(
 		}
 	}()
 
-	config, err := NewSandboxConfig(childCtx, req)
-	if err != nil {
-		errMsg := fmt.Errorf("failed to assemble env files info for FC: %w", err)
-		telemetry.ReportCriticalError(childCtx, errMsg)
-
-		return nil, errMsg
-	}
-	telemetry.ReportEvent(childCtx, "assembled env files info")
-
 	err = config.EnsureFiles(childCtx, tracer)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create env for FC: %w", err)
@@ -99,12 +90,12 @@ func NewSandbox(
 
 	defer func() {
 		if err != nil {
-			envErr := config.CleanupFiles(childCtx, tracer, false)
-			if envErr != nil {
-				errMsg := fmt.Errorf("error deleting env after failed fc start: %w", err)
+			cleanupErr := config.CleanupFiles(childCtx, tracer, false)
+			if cleanupErr != nil {
+				errMsg := fmt.Errorf("error deleting env after failed fc start: %w", cleanupErr)
 				telemetry.ReportCriticalError(childCtx, errMsg)
 			} else {
-				telemetry.ReportEvent(childCtx, "deleted env")
+				telemetry.ReportEvent(childCtx, "cleanup files since new sandbox failed")
 			}
 		}
 	}()
@@ -406,13 +397,13 @@ func (s *Sandbox) GetSandboxInfo() orchestrator.SandboxInfo {
 	// This is a read only function. Thus, we do not get lock here.
 	// Or else, it might conflict with other function (e.g., cleanup).
 	sbxPid := s.getPid()
-	sbxNetworkIdx := s.Net.NetworkIdx()
+	sbxNetworkIdx := int64(s.Net.NetworkIdx())
 	sbxPrivateIp := s.Net.HostClonedIP()
 	sbxDiffSnapshot := s.Config.EnableDiffSnapshot
 	return orchestrator.SandboxInfo{
 		SandboxID:           s.SandboxID(),
 		Pid:                 &sbxPid,
-		TemplateID:          &s.Config.EnvID,
+		TemplateID:          &s.Config.TemplateID,
 		KernelVersion:       &s.Config.KernelVersion,
 		NetworkIdx:          &sbxNetworkIdx,
 		PrivateIP:           &sbxPrivateIp,

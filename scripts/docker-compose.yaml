@@ -48,6 +48,7 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
+      # TODO: update this
       - /mnt/pmem1/prometheus-targets:/prometheus/targets
     ports:
       - "9090:9090"

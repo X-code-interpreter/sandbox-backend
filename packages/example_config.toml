@@ -1,0 +1,54 @@
+# by default search firecracker in $PATH
+fc_binary_path = ""
+# by default search cloud-hypervisor in $PATH
+ch_binary_path = ""
+# cannot be empty
+data_root = ""
+
+[orchestrator]
+# this can be omit
+port = 5000
+# this can be omit
+host = "0.0.0.0"
+# this can be omit
+subnet = "10.168.0.0/16"
+# this can be omit
+# make sure /sys/fs/cgroup/sandbox-backend has been delegated via start.sh setup
+# for example, to use `custom/code-interpreter`, please execute
+# CGROUP_NAME=custom ./start.sh setup.
+# If you are run as root, you can directly use something like "code-interpreter",
+# without prefix like "sandbox-backend/"
+cgroup_name = "sandbox-backend/code-interpreter"
+
+
+[template_manager]
+# this can be omit
+subnet = "10.160.0.0/30"
+kernel_debug_output = false
+# possible values: "normal", "build-rootfs-only", "skip-build-rootfs"
+rootfs_build_mode = "normal"
+# which template to build
+template_id = ""
+# path to the envd binary
+envd_path = "/path/to/envd"
+
+[log_collector]
+# this can be omit
+port = 10806
+
+[template."default-fc"]
+vcpu = 1
+mem_mb = 2048
+disk_mb = 4096
+# can be omit, default is "6.1.134"
+# make sure ${data_root}/kernels/${kernel_version}/vmlinux exists
+kernel_version = "6.1.134"
+docker_img = "jialianghuang/default-sandbox:latest"
+no_pull = true
+huge_pages = false
+overlay = false
+vmm_type = "firecracker"
+# start_cmd.cmd =
+# start_cmd.envfile_path =
+# start_cmd.working_dir =
+

@@ -6,29 +6,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/ch"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/config"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	firecracker "github.com/X-code-interpreter/sandbox-backend/packages/shared/fc"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/hypervisor"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/template"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/constants"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sys/unix"
 )
-
-func init() {
-	if err := utils.CreateDirAllIfNotExists(consts.KernelMountDir, 0o755); err != nil {
-		err = fmt.Errorf("error make dir %s: %w", consts.KernelMountDir, err)
-		panic(err)
-	}
-}
 
 type vmm struct {
 	hypervisor.Hypervisor
@@ -37,7 +33,7 @@ type vmm struct {
 
 type Snapshot struct {
 	vmm        vmm
-	env        *Env
+	cfg        *TemplateManagerConfig
 	socketPath string
 }
 
@@ -46,7 +42,7 @@ func (s *Snapshot) startVMM(
 	ctx context.Context,
 	tracer trace.Tracer,
 	network *network.SandboxNetwork,
-	env *Env,
+	cfg *TemplateManagerConfig,
 ) error {
 	childCtx, childSpan := tracer.Start(ctx, "start-fc-process")
 	defer childSpan.End()
@@ -57,23 +53,30 @@ func (s *Snapshot) startVMM(
 		return err
 	}
 
-	kernelDirOnHost := env.KernelDirPath()
-	kernelDirOnVM := consts.KernelMountDir
+	if err := utils.CreateDirAllIfNotExists(cfg.PrivateDir(cfg.DataRoot), 0o755); err != nil {
+		return err
+	}
 
+	// TODO: refactor this, use unshare + mount syscall directly
+	currentBinPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("error getting executable path: %w", err)
+	}
 	kernelMountCmd := fmt.Sprintf(
-		"mount --bind %s %s && ",
-		kernelDirOnHost,
-		kernelDirOnVM,
+		"%s %s %s && ",
+		filepath.Join(filepath.Dir(currentBinPath), "bind_mount"),
+		cfg.HostKernelPath(cfg.DataRoot),
+		cfg.PrivateKernelPath(cfg.DataRoot),
 	)
 	inNetNSCmd := fmt.Sprintf("ip netns exec %s ", network.NetNsName())
 	var hypervisorCmd string
-	switch env.VmmType {
-	case template.FIRECRACKER:
-		hypervisorCmd = hypervisor.FirecrackerCmd(s.env.HypervisorBinaryPath, s.socketPath)
-	case template.CLOUDHYPERVISOR:
-		hypervisorCmd = hypervisor.CloudHypervisorCmd(s.env.HypervisorBinaryPath, s.socketPath)
+	switch cfg.VmmType {
+	case config.FIRECRACKER:
+		hypervisorCmd = hypervisor.FirecrackerCmd(s.cfg.HypervisorBinaryPath, s.socketPath)
+	case config.CLOUDHYPERVISOR:
+		hypervisorCmd = hypervisor.CloudHypervisorCmd(s.cfg.HypervisorBinaryPath, s.socketPath)
 	default:
-		err := template.InvalidVmmType
+		err := config.InvalidVmmType
 		telemetry.ReportCriticalError(childCtx, err)
 		return err
 	}
@@ -84,6 +87,9 @@ func (s *Snapshot) startVMM(
 		"bash", "-c",
 		kernelMountCmd+inNetNSCmd+hypervisorCmd,
 	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		AmbientCaps: []uintptr{unix.CAP_SYS_ADMIN, unix.CAP_NET_ADMIN},
+	}
 
 	fcVMStdoutWriter := telemetry.NewEventWriter(childCtx, "vmm stdout")
 	fcVMStderrWriter := telemetry.NewEventWriter(childCtx, "vmm stderr")
@@ -161,8 +167,8 @@ func (s *Snapshot) startVMM(
 	}()
 
 	s.vmm.cmd = cmd
-	switch s.env.VmmType {
-	case template.FIRECRACKER:
+	switch s.cfg.VmmType {
+	case config.FIRECRACKER:
 		// Wait for the FC process to start so we can use FC API
 		client, err := firecracker.WaitForSocket(childCtx, tracer, s.socketPath, consts.WaitTimeForHypervisorSocket)
 		if err != nil {
@@ -171,7 +177,7 @@ func (s *Snapshot) startVMM(
 			return errMsg
 		}
 		s.vmm.Hypervisor = hypervisor.NewFirecracker(s.generateFcConfig(), client)
-	case template.CLOUDHYPERVISOR:
+	case config.CLOUDHYPERVISOR:
 		client, err := ch.WaitForSocket(childCtx, tracer, s.socketPath, consts.WaitTimeForHypervisorSocket)
 		if err != nil {
 			errMsg := fmt.Errorf("error waiting for vmm socket: %w", err)
@@ -180,7 +186,7 @@ func (s *Snapshot) startVMM(
 		}
 		s.vmm.Hypervisor = hypervisor.NewCloudHypervisor(s.generateChConfig(), client)
 	default:
-		err := template.InvalidVmmType
+		err := config.InvalidVmmType
 		telemetry.ReportCriticalError(childCtx, err)
 		return err
 	}
@@ -190,7 +196,7 @@ func (s *Snapshot) startVMM(
 }
 
 func (s *Snapshot) generateFcConfig() *hypervisor.FcConfig {
-	var kernelArgs = []string{
+	kernelArgs := []string{
 		"reboot=k",
 		"panic=1",
 		"nomodules",
@@ -198,16 +204,16 @@ func (s *Snapshot) generateFcConfig() *hypervisor.FcConfig {
 		"random.trust_cpu=on",
 		"pci=off",
 		"i8042.nokbd i8042.noaux",
-		//client-ip,server-ip,gateway-ip,netmask,hostname,device,autoconf,dns0-ip
+		// client-ip,server-ip,gateway-ip,netmask,hostname,device,autoconf,dns0-ip
 		fmt.Sprintf("ip=%s::%s:%s:fc-instance:%s:off:8.8.8.8",
-			consts.GuestNetIpAddr,
-			consts.HostTapIpAddress,
-			consts.GuestNetIpMaskLong,
+			consts.GuestNetIPAddr,
+			consts.HostTapIPAddress,
+			consts.GuestNetIPMaskLong,
 			consts.GuestIfaceName,
 		),
 	}
 
-	if s.env.KernelDebugOutput {
+	if s.cfg.KernelDebugOutput {
 		kernelArgs = append(kernelArgs, "loglevel=6 console=ttyS0")
 	} else {
 		kernelArgs = append(kernelArgs, "loglevel=1 quiet")
@@ -216,47 +222,45 @@ func (s *Snapshot) generateFcConfig() *hypervisor.FcConfig {
 	// If want to check what's happening during boot
 	// use the following commented kernel args
 	// kernelArgs := fmt.Sprintf("quiet loglevel=6 console=ttyS0 ip=%s reboot=k panic=1 pci=off nomodules i8042.nokbd i8042.noaux ipv6.disable=1 random.trust_cpu=on overlay_root=vdb init=%s", ip, constants.OverlayInitPath)
-	if s.env.Overlay {
+	if s.cfg.Overlay {
 		kernelArgs = append(kernelArgs, "overlay_root=vdb init="+constants.OverlayInitPath)
 	}
 	return &hypervisor.FcConfig{
-		VcpuCount:          s.env.VCpuCount,
-		MemoryMB:           s.env.MemoryMB,
-		KernelImagePath:    s.env.KernelMountPath(),
+		VcpuCount:          s.cfg.VCpuCount,
+		MemoryMB:           s.cfg.MemoryMB,
+		KernelImagePath:    s.cfg.PrivateKernelPath(s.cfg.DataRoot),
 		KernelBootCmd:      strings.Join(kernelArgs, " "),
 		EnableDiffSnapshot: true,
-		EnableOverlayFS:    s.env.Overlay,
-		RootfsPath:         s.env.TmpRootfsPath(),
-		WritableRootfsPath: s.env.TmpWritableRootfsPath(),
+		EnableOverlayFS:    s.cfg.Overlay,
+		RootfsPath:         s.cfg.PrivateRootfsPath(s.cfg.DataRoot),
+		WritableRootfsPath: s.cfg.PrivateWritableRootfsPath(s.cfg.DataRoot),
 		TapDevName:         consts.HostTapName,
 		GuestNetIfaceName:  consts.GuestIfaceName,
 		GuestNetMacAddr:    consts.GuestMacAddress,
-		EnableHugepage:     s.env.HugePages,
+		EnableHugepage:     s.cfg.HugePages,
 	}
 }
 
 func (s *Snapshot) generateChConfig() *hypervisor.ChConfig {
-	var (
-		kernelArgs = []string{
-			"reboot=k",
-			"nomodules",
-			"ipv6.disable=1",
-			"random.trust_cpu=on",
-			//client-ip,server-ip,gateway-ip,netmask,hostname,device,autoconf,dns0-ip
-			fmt.Sprintf("ip=%s::%s:%s:ch-instance:%s:off:8.8.8.8",
-				consts.GuestNetIpAddr,
-				consts.HostTapIpAddress,
-				consts.GuestNetIpMaskLong,
-				consts.GuestIfaceName,
-			),
-		}
-	)
-	if s.env.KernelDebugOutput {
+	kernelArgs := []string{
+		"reboot=k",
+		"nomodules",
+		"ipv6.disable=1",
+		"random.trust_cpu=on",
+		// client-ip,server-ip,gateway-ip,netmask,hostname,device,autoconf,dns0-ip
+		fmt.Sprintf("ip=%s::%s:%s:ch-instance:%s:off:8.8.8.8",
+			consts.GuestNetIPAddr,
+			consts.HostTapIPAddress,
+			consts.GuestNetIPMaskLong,
+			consts.GuestIfaceName,
+		),
+	}
+	if s.cfg.KernelDebugOutput {
 		kernelArgs = append(kernelArgs, "loglevel=6 console=hvc0")
 	} else {
 		kernelArgs = append(kernelArgs, "loglevel=1 quiet panic=1")
 	}
-	if s.env.Overlay {
+	if s.cfg.Overlay {
 		kernelArgs = append(kernelArgs,
 			"root=/dev/pmem0 ro rootflags=dax=always",
 			"overlay_root=vda init="+constants.OverlayInitPath,
@@ -266,16 +270,16 @@ func (s *Snapshot) generateChConfig() *hypervisor.ChConfig {
 		kernelArgs = append(kernelArgs, "root=/dev/pmem0 rw rootflags=dax=always")
 	}
 	return &hypervisor.ChConfig{
-		VcpuCount:          s.env.VCpuCount,
-		MemoryMB:           s.env.MemoryMB,
-		KernelImagePath:    s.env.KernelMountPath(),
+		VcpuCount:          s.cfg.VCpuCount,
+		MemoryMB:           s.cfg.MemoryMB,
+		KernelImagePath:    s.cfg.PrivateKernelPath(s.cfg.DataRoot),
 		KernelBootCmd:      strings.Join(kernelArgs, " "),
-		EnableOverlayFS:    s.env.Overlay,
-		RootfsPath:         s.env.TmpRootfsPath(),
-		WritableRootfsPath: s.env.TmpWritableRootfsPath(),
+		EnableOverlayFS:    s.cfg.Overlay,
+		RootfsPath:         s.cfg.PrivateRootfsPath(s.cfg.DataRoot),
+		WritableRootfsPath: s.cfg.PrivateWritableRootfsPath(s.cfg.DataRoot),
 		TapDevName:         consts.HostTapName,
 		GuestNetMacAddr:    consts.GuestMacAddress,
-		EnableHugepage:     s.env.HugePages,
+		EnableHugepage:     s.cfg.HugePages,
 	}
 }
 
@@ -305,15 +309,15 @@ func (s *Snapshot) cleanupVM(ctx context.Context, tracer trace.Tracer) error {
 func NewSnapshot(
 	ctx context.Context,
 	tracer trace.Tracer,
-	env *Env,
+	cfg *TemplateManagerConfig,
 	network *network.SandboxNetwork,
 ) (*Snapshot, error) {
 	childCtx, childSpan := tracer.Start(ctx, "new-snapshot")
 	defer childSpan.End()
 
-	socketPath := env.GetSocketPath()
+	socketPath := cfg.GetSocketPath()
 	snapshot := &Snapshot{
-		env:        env,
+		cfg:        cfg,
 		socketPath: socketPath,
 	}
 	defer snapshot.cleanupVM(childCtx, tracer)
@@ -322,7 +326,7 @@ func NewSnapshot(
 		childCtx,
 		tracer,
 		network,
-		env,
+		cfg,
 	)
 	if err != nil {
 		errMsg := fmt.Errorf("error starting vmm process: %w", err)
@@ -356,7 +360,7 @@ func NewSnapshot(
 			float64(constants.WaitTimeForVmStart/time.Second)),
 	)
 
-	if env.StartCmd != "" {
+	if cfg.StartCmd.Cmd != "" {
 		time.Sleep(constants.WaitTimeForStartCmd)
 		telemetry.ReportEvent(
 			childCtx,
@@ -374,7 +378,7 @@ func NewSnapshot(
 
 	{
 		ctx, span := tracer.Start(childCtx, "snapshot-vm")
-		err = snapshot.vmm.Snapshot(ctx, env.RunningPath())
+		err = snapshot.vmm.Snapshot(ctx, cfg.PrivateDir(cfg.DataRoot))
 		span.End()
 		if err != nil {
 			errMsg := fmt.Errorf("error snapshotting vmm: %w", err)

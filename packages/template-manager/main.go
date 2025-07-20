@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 	"github.com/X-code-interpreter/sandbox-backend/packages/template-manager/build"
 	"github.com/docker/docker/client"
@@ -26,42 +24,21 @@ func Fatalf(format string, a ...any) {
 	os.Exit(1)
 }
 
-func validateEnv(env *build.Env) error {
-	if env.KernelVersion == "" {
-		env.KernelVersion = consts.DefaultKernelVersion
-	}
-	if env.HypervisorBinaryPath == "" {
-		env.HypervisorBinaryPath = "firecracker"
-	}
-
-	return env.VmTemplate.Validate()
-}
-
 // In original e2b, the template-manager is a server
 // however, in our situation, we do not need to maintain
 // a long-running template-manager, so we use it as a one-shot binary
 func main() {
 	var (
-		templatePath string
-		env          build.Env
-		start        = time.Now()
+		cfgPath string
+		start   = time.Now()
 	)
-	flag.StringVar(&templatePath, "template", "", "path to the template configuration json files (e.g., my-fancy-sandbox.json)")
+	flag.StringVar(&cfgPath, "config", "", "path to the template configuration files (e.g., /path/to/config.toml)")
 	flag.Parse()
-	if templatePath == "" {
-		Fatal("detect empty template path, please set --template <path to config json files>")
+	cfg, err := build.ParseTemplateManagerConfig(cfgPath)
+	if err != nil {
+		Fatal("cannot parse configuration file: ", err)
 	}
 
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		Fatal("read template file err", err)
-	}
-	if err = json.Unmarshal(content, &env); err != nil {
-		Fatal("deserialize template configuration file failed: ", err)
-	}
-	if err = validateEnv(&env); err != nil {
-		Fatal("validate env err", err)
-	}
 	// init otel environment
 	ctx := context.Background()
 	// we disable metric for template-manager
@@ -84,8 +61,8 @@ func main() {
 		Fatal("create docker client error: ", err)
 	}
 
-	fmt.Printf("env: %+v\n", env)
-	if err := env.Build(ctx, otel.Tracer("template-manager"), dockerClient); err != nil {
+	fmt.Printf("env: %+v\n", cfg)
+	if err := cfg.BuildTemplate(ctx, otel.Tracer("template-manager"), dockerClient); err != nil {
 		Fatal("build env error: ", err)
 	}
 	fmt.Printf("build succeed: take %s", time.Since(start))

@@ -1,4 +1,4 @@
-package logcollector
+package server
 
 import (
 	"encoding/json"
@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
-	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 	"go.uber.org/zap"
 )
 
@@ -20,15 +18,15 @@ type LogMeta struct {
 	TeamID    string `json:"teamID"`
 }
 
-// make sure log dir already exists
-func init() {
-	if err := utils.CreateDirAllIfNotExists(consts.LogDiskDir, 0o755); err != nil {
-		errMsg := fmt.Errorf("check log dir failed: %w", err)
-		panic(errMsg)
-	}
+type LogCollector struct {
+	cfg *LogCollectorConfig
 }
 
-func EnvdLogHandler(w http.ResponseWriter, r *http.Request) {
+func NewLogCollector(cfg *LogCollectorConfig) *LogCollector {
+	return &LogCollector{cfg: cfg}
+}
+
+func (c *LogCollector) EnvdLogHandler(w http.ResponseWriter, r *http.Request) {
 	// for now only support POST method
 	if r.Method != http.MethodPost {
 		http.Error(w, "only allow post", http.StatusMethodNotAllowed)
@@ -50,7 +48,7 @@ func EnvdLogHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file, err := os.OpenFile(
-		filepath.Join(consts.LogDiskDir, meta.SandboxID+".log"),
+		filepath.Join(c.cfg.LogDir(), meta.SandboxID+".log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
 		0644,
 	)

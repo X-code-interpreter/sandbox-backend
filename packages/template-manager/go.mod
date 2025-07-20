@@ -3,6 +3,8 @@ module github.com/X-code-interpreter/sandbox-backend/packages/template-manager
 go 1.23
 
 require (
+	github.com/BurntSushi/toml v1.5.0
+	github.com/KarpelesLab/reflink v1.0.2
 	github.com/Microsoft/hcsshim v0.12.3
 	github.com/X-code-interpreter/sandbox-backend/packages/shared v0.0.0
 	github.com/docker/docker v26.1.3+incompatible

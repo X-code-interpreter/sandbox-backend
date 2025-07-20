@@ -3,6 +3,7 @@ module github.com/X-code-interpreter/sandbox-backend/packages/orchestrator
 go 1.23
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/KarpelesLab/reflink v1.0.1
 	github.com/X-code-interpreter/sandbox-backend/packages/shared v0.0.0
 	github.com/golang/protobuf v1.5.4

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/shirou/gopsutil/v4/process"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,27 +22,98 @@ import (
 
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/constants"
 	"github.com/X-code-interpreter/sandbox-backend/packages/orchestrator/sandbox"
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/config"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/consts"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/grpc/orchestrator"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/network"
 	"github.com/X-code-interpreter/sandbox-backend/packages/shared/telemetry"
 )
 
-var _ orchestrator.SandboxServer = (*server)(nil)
-var _ orchestrator.HostManageServer = (*server)(nil)
+var (
+	_ orchestrator.SandboxServer    = (*server)(nil)
+	_ orchestrator.HostManageServer = (*server)(nil)
+)
 
 var SandboxNotFound = errors.New("sandbox not found")
 
-func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
-	childCtx, childSpan := s.tracer.Start(ctx, "grpc-create")
-	defer childSpan.End()
-	childSpan.SetAttributes(
-		attribute.String("env.id", req.TemplateID),
-		attribute.String("sandbox.id", req.SandboxID),
+func newSandboxConfig(req *orchestrator.SandboxCreateRequest, cfg *OrchestratorConfig) (*sandbox.SandboxConfig, error) {
+	var t config.VMTemplate
+	templateFilePath := filepath.Join(
+		cfg.DataRoot,
+		consts.TemplateDirName,
+		req.TemplateID,
+		consts.TemplateFileName,
+	)
+	if _, err := toml.DecodeFile(templateFilePath, &t); err != nil {
+		return nil, fmt.Errorf("cannot decode template file %s: %w", templateFilePath, err)
+	}
+	// Assemble socket path
+	socketPath, sockErr := sandbox.GetSocketPath(req.SandboxID)
+	if sockErr != nil {
+		return nil, fmt.Errorf("error getting socket path: %w", sockErr)
+	}
+
+	var hypervisorPath string
+	if req.HypervisorBinaryPath == nil || len(*req.HypervisorBinaryPath) == 0 {
+		switch t.VmmType {
+		case config.FIRECRACKER:
+			hypervisorPath = cfg.FCBinaryPath
+		case config.CLOUDHYPERVISOR:
+			hypervisorPath = cfg.CHBinaryPath
+		}
+	} else {
+		hypervisorPath = *req.HypervisorBinaryPath
+	}
+
+	return &sandbox.SandboxConfig{
+		VMTemplate:           t,
+		DataRoot:             cfg.DataRoot,
+		SandboxID:            req.SandboxID,
+		CgroupName:           cfg.CgroupName,
+		SocketPath:           socketPath,
+		HypervisorBinaryPath: hypervisorPath,
+		EnableDiffSnapshot:   req.EnableDiffSnapshots,
+		MaxInstanceLength:    int(req.MaxInstanceLength),
+		Metadata:             req.Metadata,
+	}, nil
+}
+
+func (s *server) NewSandboxConfig(
+	ctx context.Context,
+	req *orchestrator.SandboxCreateRequest,
+) (*sandbox.SandboxConfig, error) {
+	_, span := s.tracer.Start(ctx, "new-sandbox-config")
+	defer span.End()
+	sbxCfg, err := newSandboxConfig(req, s.cfg)
+	if err != nil {
+		return nil, err
+	}
+	span.SetAttributes(
+		attribute.String("instance.env_instance_path", sbxCfg.InstancePath()),
+		attribute.String("instance.private_dir", sbxCfg.PrivateDir(sbxCfg.DataRoot)),
+		attribute.String("instance.template_dir", sbxCfg.TemplateDir(sbxCfg.DataRoot)),
+		attribute.String("instance.kernel.host_path", sbxCfg.HostKernelPath(sbxCfg.DataRoot)),
+		attribute.String("instance.hypervisor.path", sbxCfg.HypervisorBinaryPath),
+		attribute.String("instance.cgroup.path", sbxCfg.CgroupPath()),
 	)
 
+	return sbxCfg, nil
+}
+
+func (s *server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequest) (*orchestrator.SandboxCreateResponse, error) {
+	childCtx, childSpan := s.tracer.Start(ctx, "grpc-create", trace.WithAttributes(
+		attribute.String("env.id", req.TemplateID),
+		attribute.String("sandbox.id", req.SandboxID),
+	))
+	defer childSpan.End()
+
+	sbxCfg, err := s.NewSandboxConfig(childCtx, req)
+	if err != nil {
+		return nil, status.New(codes.InvalidArgument, fmt.Sprintf("cannot create sandbox config: %s", err.Error())).Err()
+	}
+
 	// TODO(huang-jl): support attach metadata to sandbox
-	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, req, s.netManager)
+	sbx, err := sandbox.NewSandbox(childCtx, s.tracer, sbxCfg, s.netManager)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create sandbox: %w", err)
 		telemetry.ReportCriticalError(childCtx, errMsg)
@@ -124,8 +196,10 @@ func (s *server) List(ctx context.Context, req *orchestrator.SandboxListRequest)
 	return result, nil
 }
 
-var sandboxIDRegExp = regexp.MustCompile(fmt.Sprintf(`/%s/([0-9a-zA-Z-]+)`, sandbox.EnvInstancesDirName))
-var netNsNameRegExp = regexp.MustCompile(`ip netns exec ([0-9a-zA-Z-]+)`)
+var (
+	sandboxIDRegExp = regexp.MustCompile(fmt.Sprintf(`/%s/([0-9a-zA-Z-]+)`, sandbox.InstancesDirName))
+	netNsNameRegExp = regexp.MustCompile(`ip netns exec ([0-9a-zA-Z-]+)`)
+)
 
 func (s *server) getSandboxInfoFromProc(ctx context.Context, proc *process.Process) *orchestrator.SandboxInfo {
 	cmdline, err := proc.Cmdline()
@@ -159,7 +233,7 @@ func (s *server) getSandboxInfoFromProc(ctx context.Context, proc *process.Proce
 	// for orphan sandbox, we only populate privateIP and sandboxID
 	// NOTE(huang-jl): maybe we can return pid to reduce the overhead for
 	// latter purge. But purge is a low-frequent event, so it is fine.
-	sbxNetworkIdx := netEnv.NetworkIdx()
+	sbxNetworkIdx := int64(netEnv.NetworkIdx())
 	sbxPrivateIP := netEnv.HostClonedIP()
 	sbxPid := uint32(proc.Pid)
 	return &orchestrator.SandboxInfo{
@@ -391,12 +465,12 @@ func (s *server) Snapshot(ctx context.Context, req *orchestrator.SandboxSnapshot
 }
 
 func (s *server) RecreateCgroup(ctx context.Context, _ *empty.Empty) (*empty.Empty, error) {
-	cgroupParentPath := filepath.Join(consts.CgroupfsPath, consts.CgroupParentName)
+	cgroupParentPath := filepath.Join(consts.CgroupfsPath, s.cfg.CgroupName)
 	// first remove, and then recreate
 	if err := os.Remove(cgroupParentPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "remove cgroup failed: %s", err.Error())
 	}
-	if err := sandbox.CreateSandboxCgroup(cgroupParentPath); err != nil {
+	if err := createSandboxCgroup(cgroupParentPath); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &empty.Empty{}, nil
@@ -405,7 +479,7 @@ func (s *server) RecreateCgroup(ctx context.Context, _ *empty.Empty) (*empty.Emp
 func (s *server) CleanNetworkEnv(ctx context.Context, req *orchestrator.HostManageCleanNetworkEnvRequest) (*empty.Empty, error) {
 	var finalErr error
 	for _, networkIdx := range req.GetNetworkIDs() {
-		netEnv := network.NewNetworkEnv(networkIdx)
+		netEnv := network.NewNetworkEnv(int(networkIdx), s.netManager.VethSubnet)
 		// sandbox id is useless here
 		net := network.NewSandboxNetwork(netEnv, "")
 		if err := net.DeleteNetns(); err != nil {

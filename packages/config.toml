@@ -1,0 +1,49 @@
+# by default search firecracker in $PATH
+fc_binary_path = "/mnt/pmem1/hjl/downloads/release-v1.9.0-x86_64/firecracker"
+# by default search cloud-hypervisor in $PATH
+ch_binary_path = ""
+# cannot be empty
+data_root = "/mnt/pmem1/hjl/sandbox-data/"
+
+[orchestrator]
+# this can be omit
+port = 5000
+# this can be omit
+host = "0.0.0.0"
+# this can be omit
+subnet = "10.168.0.0/16"
+# this can be omit
+cgroup_name = "sandbox-backend/code-interpreter"
+
+
+[template_manager]
+# this can be omit
+subnet = "10.160.0.0/30"
+kernel_debug_output = false
+# possible values: "normal", "build-rootfs-only", "skip-build-rootfs"
+rootfs_build_mode = "skip-build-rootfs"
+envd_path = "/mnt/pmem1/hjl/sandbox-backend/packages/envd/bin/envd"
+# which template to build
+template_id = "default-fc"
+
+
+[log_collector]
+# this can be omit
+port = 10806
+
+
+[template."default-fc"]
+vcpu = 1
+mem_mb = 2048
+disk_mb = 4096
+# can be omit, default is "6.1.134"
+kernel_version = "fc-6.1.134"
+docker_img = "jialianghuang/default-sandbox:latest"
+no_pull = true
+huge_pages = false
+overlay = false
+vmm_type = "firecracker"
+# start_cmd.cmd =
+# start_cmd.envfile_path =
+# start_cmd.working_dir =
+

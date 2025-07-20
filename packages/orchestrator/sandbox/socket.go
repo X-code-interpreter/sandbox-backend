@@ -4,36 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/X-code-interpreter/sandbox-backend/packages/shared/utils"
 )
 
-func getSocketPath(sandboxID string) (string, error) {
-	filename := strings.Join([]string{
-		"vmm-",
-		sandboxID,
-		".socket",
-	}, "")
-
-	var dir string
-
-	if checkExistsAndDir(os.TempDir()) {
-		dir = os.TempDir()
+func GetSocketPath(sandboxID string) (string, error) {
+	filename := "vmm-" + sandboxID + ".socket"
+	if dir := os.TempDir(); utils.CheckDirExists(dir) {
+		return filepath.Join(dir, filename), nil
 	} else {
-		errMsg := fmt.Errorf("unable to find a location for vmm socket")
-		return "", errMsg
+		return "", fmt.Errorf("unable to find a location for vmm socket")
 	}
-
-	return filepath.Join(dir, filename), nil
-}
-
-func checkExistsAndDir(path string) bool {
-	if path == "" {
-		return false
-	}
-
-	if info, err := os.Stat(path); err == nil {
-		return info.IsDir()
-	}
-
-	return false
 }

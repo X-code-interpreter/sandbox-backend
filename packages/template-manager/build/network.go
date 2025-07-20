@@ -10,15 +10,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func NewNetworkEnvForSnapshot(ctx context.Context, tracer trace.Tracer, env *Env) (*network.SandboxNetwork, error) {
-	childCtx, childSpan := tracer.Start(ctx, "new-fc-network")
+func NewNetworkEnvForSnapshot(
+	ctx context.Context,
+	tracer trace.Tracer,
+	c *TemplateManagerConfig,
+) (*network.SandboxNetwork, error) {
+	childCtx, childSpan := tracer.Start(ctx, "new-template-network")
 	defer childSpan.End()
 
 	var err error
 	// id and sandboxID here is meaningless, we just set some dummy values.
 	// BTW, the orchestrator will use idx started from 1, so 0 here is safe.
-	netEnv := network.NewNetworkEnv(0)
-	net := network.NewSandboxNetwork(netEnv, constants.NetnsNamePrefix+env.EnvID)
+	netEnv := network.NewNetworkEnv(0, c.Subnet.IPNet)
+	net := network.NewSandboxNetwork(netEnv, constants.NetnsNamePrefix+c.TemplateID)
 
 	err = net.StartConfigure()
 	defer func() {

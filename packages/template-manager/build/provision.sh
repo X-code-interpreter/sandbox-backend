@@ -3,13 +3,13 @@ set -euo xtrace pipefail
 
 echo "Starting provisioning script."
 
-echo "ENV_ID={{ .EnvID }}" >/.e2b
+echo "TEMPLATE_ID={{ .TemplateID }}" >/.e2b
 
 # We are downloading the packages manually
 apt-get update --download-only
 DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes apt-get install -y \
-  openssh-server sudo systemd socat chrony linuxptp lsof
-  # xvfb x11vnc
+	openssh-server sudo systemd socat chrony linuxptp lsof
+# xvfb x11vnc
 
 # Set up autologin.
 mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d
